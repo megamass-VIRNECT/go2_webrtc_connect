@@ -15,6 +15,8 @@ from queue import Queue
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from aiortc import MediaStreamTrack
 
+import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")))
 from load_webrtc_config import load_webrtc_config
 
