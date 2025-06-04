@@ -1,7 +1,7 @@
 import json
 import os
 
-def load_webrtc_config(config_path="./webrtc_config.json"):
+def load_webrtc_config(config_path="webrtc_config.json"):
     """
     webrtc_config.json 파일을 읽어서 딕셔너리로 반환합니다.
 
@@ -11,10 +11,15 @@ def load_webrtc_config(config_path="./webrtc_config.json"):
     Returns:
         dict: { "email": ..., "password": ..., "sn": ... }
     """
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    root_path = os.path.abspath(__file__)
+    print(root_path)
+    config_full_path = os.path.join(root_path, config_path)
+
+    if not os.path.exists(config_full_path):
+        raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {config_full_path}")
+
+    with open(config_full_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     # 유효성 검증
