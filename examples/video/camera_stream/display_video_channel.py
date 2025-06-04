@@ -15,10 +15,7 @@ from queue import Queue
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from aiortc import MediaStreamTrack
 
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")))
-from load_webrtc_config import load_webrtc_config
+#from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
@@ -30,8 +27,9 @@ def main():
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
 
-    config = load_webrtc_config()
-    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
+    #config = load_webrtc_config()
+    #conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
+    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D4000OAH9BA81", username="megamass@virnect.com", password="virnect12!")
 
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
