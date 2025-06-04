@@ -12,7 +12,7 @@ def load_webrtc_config(config_path="webrtc_config.json"):
         dict: { "email": ..., "password": ..., "sn": ... }
     """
 
-    root_path = os.path.realpath(__file__)
+    root_path = os.path.dirname(os.path.realpath(__file__))
     print(root_path)
     config_full_path = os.path.join(root_path, config_path)
 
