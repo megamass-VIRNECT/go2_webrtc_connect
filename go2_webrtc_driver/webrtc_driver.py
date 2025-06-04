@@ -195,7 +195,7 @@ class Go2WebRTCConnection:
 
     
     async def get_answer_from_remote_peer(self, pc, turn_server_info):
-        sdp_offer = pc.localDescriptionprint(f"sdp_offer_json: {sdp_offer_json}")
+        sdp_offer = pc.localDescription
 
         sdp_offer_json = {
             "id": "",
