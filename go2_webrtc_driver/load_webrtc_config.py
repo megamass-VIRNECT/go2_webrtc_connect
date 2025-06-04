@@ -1,7 +1,7 @@
 import json
 import os
 
-def load_webrtc_config(config_path="../webrtc_config.json"):
+def load_webrtc_config(config_path="webrtc_config.json"):
     """
     webrtc_config.json 파일을 읽어서 딕셔너리로 반환합니다.
 
