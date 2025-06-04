@@ -4,6 +4,7 @@ import json
 import sys
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.constants import RTC_TOPIC, VUI_COLOR
+from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
@@ -14,7 +15,8 @@ async def main():
         # Choose a connection method (uncomment the correct one)
         conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
-        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+        # config = load_webrtc_config()
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
         # Connect to the WebRTC service.

@@ -14,6 +14,7 @@ import time
 from queue import Queue
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from aiortc import MediaStreamTrack
+from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
@@ -22,9 +23,12 @@ def main():
     frame_queue = Queue()
 
     # Choose a connection method (uncomment the correct one)
-    conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
+    # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
-    # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+
+    config = load_webrtc_config()
+    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
+
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
     # Async function to receive video frames and put them in the queue

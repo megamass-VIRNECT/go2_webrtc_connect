@@ -17,6 +17,7 @@ from datetime import datetime
 import os
 import sys
 import ast
+from load_webrtc_config import load_webrtc_config
 
 # Increase the field size limit for CSV reading
 csv.field_size_limit(sys.maxsize)
@@ -131,7 +132,8 @@ async def lidar_webrtc_connection():
     while retry_attempts < MAX_RETRY_ATTEMPTS:
         try:
             conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")  # WebRTC IP
-            # _webrtc_connection = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+            # config = load_webrtc_config()
+            # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
             # _webrtc_connection = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
             # Connect to WebRTC
