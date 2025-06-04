@@ -91,6 +91,8 @@ def make_remote_request(path, body, token, method="GET"):
         response = requests.post(url, data=encoded_body, headers=headers)
 
     # Return the response as JSON
+    print("@@@@@@@@@@@@@@@@@")
+    print(response)
     return response.json()
 
 def make_local_request(path, body=None, headers=None):
