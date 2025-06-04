@@ -88,18 +88,9 @@ def make_remote_request(path, body, token, method="GET"):
     else:
         # URL-encode the body for POST request
         encoded_body = urllib.parse.urlencode(body)
-        print("@@@@@@@@@@@@@@@@@")
-        print(url)
-        print("@@@@@@@@@@@@@@@@@")
-        print(encoded_body)
-        print("@@@@@@@@@@@@@@@@@")
-        print(headers)
-
         response = requests.post(url, data=encoded_body, headers=headers)
 
     # Return the response as JSON
-    print("@@@@@@@@@@@@@@@@@")
-    print(response.text)
     return response.json()
 
 def make_local_request(path, body=None, headers=None):
