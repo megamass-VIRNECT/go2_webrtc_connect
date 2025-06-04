@@ -100,6 +100,7 @@ def send_offer():
             "token": token
         }
 
+        print(f"sdp_offer_json: {sdp_offer_json}")
         peer_answer_json = send_sdp_to_remote_peer(sn, json.dumps(sdp_offer_json), token, public_key)
         return jsonify(json.loads(peer_answer_json))
 

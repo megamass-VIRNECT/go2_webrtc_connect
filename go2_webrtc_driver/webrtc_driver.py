@@ -90,12 +90,12 @@ class Go2WebRTCConnection:
         configuration = RTCConfiguration(
             iceServers=ice_servers
         )
-        
+
+        print(f"configuration: {configuration}")
         return configuration
 
     async def init_webrtc(self, turn_server_info=None, ip=None):
         configuration = self.create_webrtc_configuration(turn_server_info)
-        print(f"configuration: {configuration}")
         self.pc = RTCPeerConnection(configuration)
 
 
@@ -175,7 +175,6 @@ class Go2WebRTCConnection:
 
         if self.connectionMethod == WebRTCConnectionMethod.Remote:
             peer_answer_json = await self.get_answer_from_remote_peer(self.pc, turn_server_info)
-            print(f"peer_answer_json: {peer_answer_json}")
         elif self.connectionMethod == WebRTCConnectionMethod.LocalSTA or self.connectionMethod == WebRTCConnectionMethod.LocalAP:
             peer_answer_json = await self.get_answer_from_local_peer(self.pc, self.ip)
 
@@ -210,6 +209,7 @@ class Go2WebRTCConnection:
 
         peer_answer_json = send_sdp_to_remote_peer(self.sn, json.dumps(sdp_offer_json), self.token, self.public_key)
 
+        print(f"peer_answer_json: {peer_answer_json}")
         return peer_answer_json
 
     async def get_answer_from_local_peer(self, pc, ip):
