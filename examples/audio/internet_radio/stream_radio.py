@@ -3,7 +3,6 @@ import asyncio
 import sys
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from aiortc.contrib.media import MediaPlayer
-from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)

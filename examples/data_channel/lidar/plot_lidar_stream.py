@@ -14,10 +14,8 @@ from flask_socketio import SocketIO
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 import argparse
 from datetime import datetime
-import os
 import sys
 import ast
-from load_webrtc_config import load_webrtc_config
 
 # Increase the field size limit for CSV reading
 csv.field_size_limit(sys.maxsize)

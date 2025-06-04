@@ -3,7 +3,6 @@ import logging
 import sys
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.constants import RTC_TOPIC
-from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)

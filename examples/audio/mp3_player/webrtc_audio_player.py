@@ -4,7 +4,6 @@ import os
 import json
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.webrtc_audiohub import WebRTCAudioHub
-from load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.ERROR)
