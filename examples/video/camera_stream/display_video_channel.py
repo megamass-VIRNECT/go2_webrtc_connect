@@ -1,11 +1,11 @@
 import cv2
 import numpy as np
 
-# # Create an OpenCV window and display a blank image
-# height, width = 720, 1280  # Adjust the size as needed
-# img = np.zeros((height, width, 3), dtype=np.uint8)
-# cv2.imshow('Video', img)
-# cv2.waitKey(1)  # Ensure the window is created
+# Create an OpenCV window and display a blank image
+height, width = 720, 1280  # Adjust the size as needed
+img = np.zeros((height, width, 3), dtype=np.uint8)
+cv2.imshow('Video', img)
+cv2.waitKey(1)  # Ensure the window is created
 
 import asyncio
 import logging
@@ -27,16 +27,9 @@ def main():
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
 
     config = load_webrtc_config()
-    print(config)
     conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D4000OAH9BA81", username="megamass@virnect.com", password="virnect12!")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
-
-    # Create an OpenCV window and display a blank image
-    height, width = 720, 1280  # Adjust the size as needed
-    img = np.zeros((height, width, 3), dtype=np.uint8)
-    cv2.imshow('Video', img)
-    cv2.waitKey(1)  # Ensure the window is created
 
     # Async function to receive video frames and put them in the queue
     async def recv_camera_stream(track: MediaStreamTrack):
