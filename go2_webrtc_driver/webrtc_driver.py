@@ -91,7 +91,7 @@ class Go2WebRTCConnection:
             iceServers=ice_servers
         )
 
-        print(f"configuration: {configuration}")
+        print(f"WebRTC Configuration: {configuration}")
         return configuration
 
     async def init_webrtc(self, turn_server_info=None, ip=None):
