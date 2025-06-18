@@ -38,6 +38,7 @@ def get_nested_field(message, *fields):
 
 # Function to obtain a fresh token from the backend server
 def fetch_token(email: str, password: str) -> str:
+    print("Obtaining TOKEN...!!!!!!~!")
     logging.info("Obtaining TOKEN...")
     path = "login/email"
     body = {
