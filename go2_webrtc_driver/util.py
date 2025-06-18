@@ -51,8 +51,8 @@ def fetch_token(email: str, password: str) -> str:
         print(f"accessToken: {access_token}")
         return access_token
     else:
-        logging.error("Failed to receive token")
         print("Failed to receive token")
+        logging.error("Failed to receive token")
         return None
 
 
