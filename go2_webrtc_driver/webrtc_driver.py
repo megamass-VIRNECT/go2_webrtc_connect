@@ -207,10 +207,8 @@ class Go2WebRTCConnection:
 
         logging.debug("Local SDP created: %s", sdp_offer_json)
 
-        print(f"sdp_offer_json: {sdp_offer_json}")
         peer_answer_json = send_sdp_to_remote_peer(self.sn, json.dumps(sdp_offer_json), self.token, self.public_key)
 
-        print(f"peer_answer_json: {peer_answer_json}")
         return peer_answer_json
 
     async def get_answer_from_local_peer(self, pc, ip):

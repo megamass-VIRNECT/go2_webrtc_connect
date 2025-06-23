@@ -118,6 +118,9 @@ def make_local_request(path, body=None, headers=None):
 # Function to send SDP to peer and receive the answer
 def send_sdp_to_remote_peer(serial: str, sdp: str, access_token: str, public_key: RSA.RsaKey) -> str:
     logging.info("Sending SDP to Go2...")
+    print("Sending SDP to Go2...")
+    print(f"sdp_offer_json: {sdp}")
+
     aes_key = generate_aes_key()
     path = "webrtc/connect"
     body = {
@@ -128,8 +131,11 @@ def send_sdp_to_remote_peer(serial: str, sdp: str, access_token: str, public_key
     }
     response = make_remote_request(path, body, token=access_token, method="POST")
     if response.get("code") == 100:
+        peer_answer_json = aes_decrypt(response['data'], aes_key)
         logging.info("Received SDP Answer from Go2!")
-        return aes_decrypt(response['data'], aes_key)
+        print("Received SDP Answer from Go2!")
+        print(f"peer_answer_json: {peer_answer_json}")
+        return peer_answer_json
     elif response.get("code") == 1000:
         print("Device not online")
         sys.exit(1)
