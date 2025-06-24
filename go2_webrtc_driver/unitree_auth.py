@@ -93,6 +93,24 @@ def make_remote_request(path, body, token, method="GET"):
     # Return the response as JSON
     return response.json()
 
+def make_remote_request_for_token(path, body, token, method="GET"):
+    BASE_URL = "https://global-robot-api.unitree.com/"
+
+    # Full URL
+    url = BASE_URL + path
+
+    if method.upper() == "GET":
+        # Convert body dictionary to query parameters for GET request
+        params = urllib.parse.urlencode(body)
+        response = requests.get(url, params=params)
+    else:
+        # URL-encode the body for POST request
+        encoded_body = urllib.parse.urlencode(body)
+        response = requests.post(url, data=encoded_body)
+
+    # Return the response as JSON
+    return response.json()
+
 def make_local_request(path, body=None, headers=None):
     try:
         # Send POST request with provided path, body, and headers

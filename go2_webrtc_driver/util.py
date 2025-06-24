@@ -6,7 +6,7 @@ import requests
 import time
 import sys
 from Crypto.PublicKey import RSA
-from .unitree_auth import make_remote_request
+from .unitree_auth import make_remote_request, make_remote_request_for_token
 from .encryption import rsa_encrypt, rsa_load_public_key, aes_decrypt, generate_aes_key
 
 # Function to generate MD5 hash of a string
@@ -45,7 +45,7 @@ def fetch_token(email: str, password: str) -> str:
         'email': email,
         'password': _generate_md5(password)
     }
-    response = make_remote_request(path, body, token="", method="POST")
+    response = make_remote_request_for_token(path, body, token="", method="POST")
     if response.get("code") == 100:
         data = response.get("data")
         access_token = data.get("accessToken")
