@@ -45,7 +45,8 @@ def fetch_token(email: str, password: str) -> str:
         'email': email,
         'password': _generate_md5(password)
     }
-    response = make_remote_request_for_token(path, body, token="", method="POST")
+    # response = make_remote_request_for_token(path, body, token="", method="POST")
+    response = make_remote_request(path, body, token="", method="POST")
     if response.get("code") == 100:
         data = response.get("data")
         access_token = data.get("accessToken")
