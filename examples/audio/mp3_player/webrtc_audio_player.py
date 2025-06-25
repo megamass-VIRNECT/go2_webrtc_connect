@@ -4,6 +4,7 @@ import os
 import json
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.webrtc_audiohub import WebRTCAudioHub
+from go2_webrtc_driver.load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.ERROR)
@@ -12,9 +13,12 @@ logger = logging.getLogger(__name__)
 async def main():
     try:
         # Establish WebRTC connection
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.137.120")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.137.120")
         # config = load_webrtc_config()
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
+        config = load_webrtc_config()
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"],
+                                   password=config["password"])
         await conn.connect()
         logger.info("WebRTC connection established")
 
