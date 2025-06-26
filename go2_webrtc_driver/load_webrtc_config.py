@@ -21,9 +21,9 @@ def load_webrtc_config(config_path="../webrtc_config.json"):
     with open(config_full_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    # 유효성 검증
-    required_keys = {"email", "password", "sn"}
-    if not required_keys.issubset(config.keys()):
-        raise ValueError(f"다음 필드가 필요합니다: {required_keys}")
+    # # 유효성 검증
+    # required_keys = {"email", "password", "sn"}
+    # if not required_keys.issubset(config.keys()):
+    #     raise ValueError(f"다음 필드가 필요합니다: {required_keys}")
 
     return config

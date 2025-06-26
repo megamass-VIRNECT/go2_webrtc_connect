@@ -27,7 +27,8 @@ def main():
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
 
     config = load_webrtc_config()
-    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
+    user_config = config["user"]
+    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=user_config["email"], password=user_config["password"])
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D4000OAH9BA81", username="megamass@virnect.com", password="virnect12!")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
