@@ -21,9 +21,9 @@ sn = config["sn"]
 email = config["user"]["email"]
 password = config["user"]["password"]
 local_turn_server_info = config["iceServerInfo"]
-global token
-global public_key
-global remote_turn_server_info
+token = None
+public_key = None
+remote_turn_server_info = None
 
 @webrtc_api.route("/api/fetch-remote-configuration", methods=["POST"])
 def fetch_remote_configuration():
@@ -32,17 +32,7 @@ def fetch_remote_configuration():
     global remote_turn_server_info
 
     try:
-        token = fetch_token(email, password)
-        if not token:
-            return jsonify({"error": "Invalid email or password"}), 401
-
-        public_key = fetch_public_key()
-        if not public_key:
-            return jsonify({"error": "Failed to fetch public key"}), 500
-
-        remote_turn_server_info = fetch_turn_server_info(sn, token, public_key)
-        if not remote_turn_server_info:
-            return jsonify({"error": "Failed to fetch turn_server_info"}), 500
+        ensure_webrtc_session()
 
         conn = Go2WebRTCConnection(connectionMethod=WebRTCConnectionMethod.Remote)
         configuration = conn.create_webrtc_configuration(remote_turn_server_info)
@@ -62,6 +52,8 @@ def send_remote_offer():
     local_description = data.get("local_description")  # { "type": "...", "sdp": "..." }
 
     try:
+        ensure_webrtc_session()
+
         # send SDP offer to remote peer
         sdp_offer_json = {
             "id": "",
@@ -98,6 +90,24 @@ def send_local_offer():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+def ensure_webrtc_session():
+    global token, public_key, remote_turn_server_info
+
+    if token and public_key and remote_turn_server_info:
+        return
+
+    token = fetch_token(email, password)
+    if not token:
+        raise ValueError("Invalid email or password")
+
+    public_key = fetch_public_key()
+    if not public_key:
+        raise ValueError("Failed to fetch public key")
+
+    remote_turn_server_info = fetch_turn_server_info(sn, token, public_key)
+    if not remote_turn_server_info:
+        raise ValueError("Failed to fetch TURN server info")
 
 def discover_ip():
     discovered_ip_sn_addresses = discover_ip_sn()
