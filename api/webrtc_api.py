@@ -24,16 +24,6 @@ local_turn_server_info = config["iceServerInfo"]
 global token
 global public_key
 global remote_turn_server_info
-global ip
-
-discovered_ip_sn_addresses = discover_ip_sn()
-if discovered_ip_sn_addresses:
-    if sn in discovered_ip_sn_addresses:
-        ip = discovered_ip_sn_addresses[sn]
-    else:
-        raise ValueError("The provided serial number wasn't found on the network. Provide an IP address instead.")
-else:
-    raise ValueError("No devices found on the network. Provide an IP address instead.")
 
 @webrtc_api.route("/api/fetch-remote-configuration", methods=["POST"])
 def fetch_remote_configuration():
@@ -102,9 +92,19 @@ def send_local_offer():
             "type": local_description["type"]
         }
 
-        peer_answer_json = send_sdp_to_local_peer(ip, json.dumps(sdp_offer_json))
+        peer_answer_json = send_sdp_to_local_peer(discover_ip(), json.dumps(sdp_offer_json))
 
         return jsonify(json.loads(peer_answer_json))
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+def discover_ip():
+    discovered_ip_sn_addresses = discover_ip_sn()
+    if discovered_ip_sn_addresses:
+        if sn in discovered_ip_sn_addresses:
+            return discovered_ip_sn_addresses[sn]
+        else:
+            raise ValueError("The provided serial number wasn't found on the network. Provide an IP address instead.")
+    else:
+        raise ValueError("No devices found on the network. Provide an IP address instead.")
