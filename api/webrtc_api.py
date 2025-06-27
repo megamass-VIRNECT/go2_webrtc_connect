@@ -79,10 +79,9 @@ def send_local_offer():
         # send SDP offer to local peer
         sdp_offer_json = {
             "id": "",
-            # "turnserver": local_turn_server_info,
+            "turnserver": local_turn_server_info,
             "sdp": local_description["sdp"],
-            "type": local_description["type"],
-            "token": ""
+            "type": local_description["type"]
         }
 
         peer_answer_json = send_sdp_to_local_peer(discover_ip(), json.dumps(sdp_offer_json))
