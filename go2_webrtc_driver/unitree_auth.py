@@ -160,6 +160,8 @@ def send_sdp_to_remote_peer(serial: str, sdp: str, access_token: str, public_key
 
 
 def send_sdp_to_local_peer(ip, sdp):
+    logging.info(f"Robot IP: {ip}")
+
     try:
         # Try the old method first
         logging.info("Trying to send SDP using the old method...")
