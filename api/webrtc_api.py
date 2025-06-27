@@ -82,7 +82,7 @@ def send_local_offer():
             # "turnserver": local_turn_server_info,
             "sdp": local_description["sdp"],
             "type": local_description["type"],
-            "token": token
+            "token": ""
         }
 
         peer_answer_json = send_sdp_to_local_peer(discover_ip(), json.dumps(sdp_offer_json))
