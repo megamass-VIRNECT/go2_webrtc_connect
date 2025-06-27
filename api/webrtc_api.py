@@ -56,11 +56,10 @@ def send_remote_offer():
 
         # send SDP offer to remote peer
         sdp_offer_json = {
-            "id": "STA_localNetwork",
-            # "turnserver": remote_turn_server_info,
+            "id": "",
+            "turnserver": remote_turn_server_info,
             "sdp": local_description["sdp"],
-            # "type": local_description["type"],
-            "type": "offer",
+            "type": local_description["type"],
             "token": token
         }
 
