@@ -78,8 +78,8 @@ def send_local_offer():
     try:
         # send SDP offer to local peer
         sdp_offer_json = {
-            "id": "",
-            "turnserver": local_turn_server_info,
+            "id": "STA_localNetwork",
+            # "turnserver": local_turn_server_info,
             "sdp": local_description["sdp"],
             "type": local_description["type"],
             "token": token
