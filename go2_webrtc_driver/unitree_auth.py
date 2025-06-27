@@ -266,7 +266,12 @@ def send_sdp_to_local_peer_new_method(ip, sdp):
             headers = {'Content-Type': 'application/x-www-form-urlencoded'}
 
             # Send the encrypted data via POST
-            response = make_local_request(url, body=json.dumps(body), headers=headers)
+            print("======================================")
+            print(url)
+            print("--------------------------------------")
+            print(json.dumps(body))
+            print("======================================")
+            # response = make_local_request(url, body=json.dumps(body), headers=headers)
 
             # If response is successful, decrypt it
             if response:
