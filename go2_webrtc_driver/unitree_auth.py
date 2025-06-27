@@ -9,6 +9,8 @@ import sys
 from Crypto.PublicKey import RSA
 from .encryption import aes_encrypt, generate_aes_key, rsa_encrypt, aes_decrypt, rsa_load_public_key
 
+logging.basicConfig(level=logging.INFO)
+
 def _calc_local_path_ending(data1):
     # Initialize an array of strings
     strArr = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
