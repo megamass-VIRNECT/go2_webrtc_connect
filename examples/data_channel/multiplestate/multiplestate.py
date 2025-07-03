@@ -4,6 +4,7 @@ import sys
 import json
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.constants import RTC_TOPIC
+from go2_webrtc_driver.load_webrtc_config import load_webrtc_config
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
@@ -41,12 +42,14 @@ def display_data(message):
 async def main():
     try:
         # Choose a connection method (uncomment the correct one)
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
         # config = load_webrtc_config()
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
-
+        config = load_webrtc_config()
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"],
+                                   username=config["user"]["email"], password=config["user"]["password"])
         # Connect to the WebRTC service.
         await conn.connect()
 

@@ -17,8 +17,7 @@ async def main():
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
         config = load_webrtc_config()
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"],
-                                   password=config["password"])
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["user"]["email"], password=config["user"]["password"])
         
         await conn.connect()
 
