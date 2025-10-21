@@ -23,11 +23,11 @@ def main():
     frame_queue = Queue()
 
     # Choose a connection method (uncomment the correct one)
-    # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
+    conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.1.7")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
 
-    config = load_webrtc_config()
-    conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["user"]["email"], password=config["user"]["password"])
+    # config = load_webrtc_config()
+    # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["user"]["email"], password=config["user"]["password"])
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D4000OAH9BA81", username="megamass@virnect.com", password="virnect12!")
     # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 

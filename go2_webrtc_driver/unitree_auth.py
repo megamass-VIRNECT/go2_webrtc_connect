@@ -8,8 +8,26 @@ import json
 import sys
 from Crypto.PublicKey import RSA
 from .encryption import aes_encrypt, generate_aes_key, rsa_encrypt, aes_decrypt, rsa_load_public_key
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logging.basicConfig(level=logging.INFO)
+
+def decrypt_con_notify_data(encrypted_b64: str) -> str:
+    """Decrypt con_notify data when data2 == 2 (new firmware)"""
+    key = bytes([232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 43, 179, 235, 227])
+
+    data = base64.b64decode(encrypted_b64)
+
+    if len(data) < 28:
+        raise ValueError("Decryption failed: input data too short")
+
+    tag = data[-16:]
+    nonce = data[-28:-16]
+    ciphertext = data[:-28]
+
+    aesgcm = AESGCM(key)
+    plaintext = aesgcm.decrypt(nonce, ciphertext + tag, None)
+    return plaintext.decode('utf-8')
 
 def _calc_local_path_ending(data1):
     # Initialize an array of strings
@@ -239,9 +257,16 @@ def send_sdp_to_local_peer_new_method(ip, sdp):
 
             # Parse the decoded response as JSON
             decoded_json = json.loads(decoded_response)
-            
-            # Extract the 'data1' field from the JSON
+
+            # Extract the 'data1' and 'data2' fields from the JSON
             data1 = decoded_json.get('data1')
+            data2 = decoded_json.get('data2')
+
+            # If data2 == 2, decrypt the data1 (new firmware with encryption)
+            if data2 == 2:
+                logging.debug("Detected encrypted data (data2 == 2), decrypting...")
+                data1 = decrypt_con_notify_data(data1)
+                logging.debug(f"Decrypted data1: {data1[:100]}...")
 
             # Extract the public key from 'data1'
             public_key_pem = data1[10:len(data1)-10]
