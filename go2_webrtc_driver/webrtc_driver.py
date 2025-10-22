@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import sys
+import inspect
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.contrib.media import MediaPlayer
 from .unitree_auth import send_sdp_to_local_peer, send_sdp_to_remote_peer
@@ -23,6 +24,8 @@ class Go2WebRTCConnection:
         self.connectionMethod = connectionMethod
         self.isConnected = False
         self.token = fetch_token(username, password) if username and password else ""
+        self._connection_state_callbacks = []
+        self._ice_connection_state_callbacks = []
 
     async def connect(self):
         print_status("WebRTC connection", "🟡 started")
@@ -58,6 +61,23 @@ class Go2WebRTCConnection:
         await self.disconnect()
         await self.connect()
         print_status("WebRTC connection", "🟢 reconnected")
+
+    def add_connection_state_callback(self, callback):
+        if callable(callback):
+            self._connection_state_callbacks.append(callback)
+
+    def add_ice_connection_state_callback(self, callback):
+        if callable(callback):
+            self._ice_connection_state_callbacks.append(callback)
+
+    def _notify_state_callbacks(self, callbacks, *args):
+        for callback in list(callbacks):
+            try:
+                result = callback(*args)
+                if inspect.iscoroutine(result):
+                    asyncio.create_task(result)
+            except Exception:
+                logging.exception("State callback raised an exception")
 
     def create_webrtc_configuration(self, turn_server_info, stunEnable=True, turnEnable=True) -> RTCConfiguration:
         ice_servers = []
@@ -127,6 +147,8 @@ class Go2WebRTCConnection:
             elif state == "closed":
                 print_status("ICE Connection State", "⚫ closed")
 
+            self._notify_state_callbacks(self._ice_connection_state_callbacks, state)
+
 
         @self.pc.on("connectionstatechange")
         async def on_connection_state_change():
@@ -141,6 +163,8 @@ class Go2WebRTCConnection:
                 print_status("Peer Connection State", "⚫ closed")
             elif state == "failed":
                 print_status("Peer Connection State", "🔴 failed")
+
+            self._notify_state_callbacks(self._connection_state_callbacks, state)
         
         @self.pc.on("signalingstatechange")
         async def on_signaling_state_change():
@@ -232,5 +256,4 @@ class Go2WebRTCConnection:
         peer_answer_json = send_sdp_to_local_peer(ip, json.dumps(sdp_offer_json))
 
         return peer_answer_json
-
 

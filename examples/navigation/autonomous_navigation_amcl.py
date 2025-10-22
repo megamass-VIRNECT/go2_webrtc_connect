@@ -6,6 +6,7 @@ Automatically estimates robot position using AMCL, then navigates to goal
 import asyncio
 import logging
 import sys
+import threading
 import numpy as np
 import matplotlib.pyplot as plt
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
@@ -19,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 class AMCLNavigator:
     """Autonomous navigation with AMCL localization"""
 
-    def __init__(self, map_file: str):
+    def __init__(self, map_file: str, loop=None, enable_visualization: bool = True):
         # Load map
         self.map = load_map(map_file)
         logging.info(f"Map loaded: {self.map.width}x{self.map.height}, resolution={self.map.resolution}m")
@@ -66,17 +67,39 @@ class AMCLNavigator:
         # AMCL processing lock to prevent concurrent updates
         self._amcl_processing = False
 
-        # Visualization - DISABLED for now to test connection stability
+        # Event loop reference (for scheduling coroutines from callbacks)
+        self.loop = loop
+        if self.loop is None:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.loop = None
+
+        # Visualization state
         self.fig = None
         self.ax = None
-        # self._setup_visualization()  # COMMENTED OUT
+        self.visualization_requested = enable_visualization
+        self.visualization_initialized = False
+        self.particles_plot = None
+        self.path_plot = None
+        self.robot_plot = None
+        self.robot_arrow = None
+        self.goal_plot = None
+        self.status_text = None
+
+        # Connection management
+        self._connection_callbacks_registered = False
+        self._reconnecting = False
+        self._subscription_topics = [
+            ("rt/lf/sportmodestate", self.sportmodestate_callback),
+            ("rt/utlidar/voxel_map_compressed", self.lidar_callback),
+        ]
+
+        if self.visualization_requested and threading.current_thread() is threading.main_thread():
+            self._setup_visualization()
 
     def _setup_visualization(self):
         """Setup visualization - use non-blocking backend"""
-        # CRITICAL: Use Agg backend for thread-safe non-blocking operation
-        import matplotlib
-        matplotlib.use('TkAgg')  # Use TkAgg for better async compatibility
-
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(12, 12))
         self.ax.set_xlabel('Y (meters)')
@@ -117,6 +140,98 @@ class AMCLNavigator:
         # Force initial draw
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
+        self.visualization_initialized = True
+
+    def initialize_visualization(self):
+        """Initialize visualization from the main thread if requested"""
+        if not self.visualization_requested or self.visualization_initialized:
+            return
+
+        self._setup_visualization()
+
+    async def on_connection_ready(self):
+        """Configure data channel after (re)connection"""
+        if self.conn is None or self.conn.datachannel is None:
+            logging.warning("Connection not ready for configuration")
+            return
+
+        try:
+            await self.conn.datachannel.disableTrafficSaving(True)
+        except Exception as exc:
+            logging.error(f"Failed to disable traffic saving: {exc}")
+
+        try:
+            self.conn.datachannel.set_decoder(decoder_type='libvoxel')
+        except Exception as exc:
+            logging.error(f"Failed to set decoder: {exc}")
+
+        self._subscribe_topics()
+        self._enable_lidar_stream()
+
+    def _subscribe_topics(self):
+        if self.conn is None or self.conn.datachannel is None:
+            return
+
+        for topic, callback in self._subscription_topics:
+            try:
+                self.conn.datachannel.pub_sub.subscribe(topic, callback)
+            except Exception as exc:
+                logging.error(f"Failed to subscribe to {topic}: {exc}")
+
+    def _enable_lidar_stream(self):
+        if self.conn is None or self.conn.datachannel is None:
+            return
+
+        try:
+            self.conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
+        except Exception as exc:
+            logging.error(f"Failed to enable LiDAR stream: {exc}")
+
+    def register_connection_callbacks(self):
+        if self.conn is None or self._connection_callbacks_registered:
+            return
+
+        self.conn.add_connection_state_callback(self._on_connection_state_change)
+        self.conn.add_ice_connection_state_callback(self._on_ice_state_change)
+        self._connection_callbacks_registered = True
+
+    def _on_connection_state_change(self, state: str):
+        logging.info(f"Connection state changed: {state}")
+        if state in {"closed", "failed"}:
+            if self.loop:
+                asyncio.run_coroutine_threadsafe(self._attempt_reconnect(), self.loop)
+
+    def _on_ice_state_change(self, state: str):
+        logging.info(f"ICE state changed: {state}")
+        if state in {"closed", "failed"} and self.loop:
+            asyncio.run_coroutine_threadsafe(self._attempt_reconnect(), self.loop)
+
+    async def _attempt_reconnect(self):
+        if self._reconnecting:
+            return
+
+        self._reconnecting = True
+        self.is_navigating = False
+        logging.warning("WebRTC connection lost. Attempting to reconnect...")
+
+        try:
+            for attempt in range(3):
+                try:
+                    await self.conn.reconnect()
+                    break
+                except Exception as exc:
+                    logging.error(f"Reconnect attempt {attempt + 1} failed: {exc}")
+                    await asyncio.sleep(2)
+            else:
+                logging.error("Unable to reconnect after multiple attempts")
+                return
+
+            logging.info("Reconnected to Go2. Restoring subscriptions...")
+            await self.on_connection_ready()
+            logging.info("Connection restored")
+        finally:
+            self._reconnecting = False
+
 
     def _get_map_image(self):
         """Get map as image"""
@@ -128,14 +243,39 @@ class AMCLNavigator:
         return image
 
     def _on_click(self, event):
-        """Handle mouse click to set goal - DISABLED"""
-        pass  # Matplotlib disabled
+        """Handle mouse click to set goal"""
+        if self.fig is None or self.ax is None:
+            return
+
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            return
+
+        if not self.is_localized or self.amcl_pose is None:
+            logging.info("Robot not localized yet; click ignored.")
+            return
+
+        if self.loop is None:
+            logging.warning("Event loop unavailable; cannot schedule path planning.")
+            return
+
+        goal_y = float(event.xdata)
+        goal_x = float(event.ydata)
+
+        logging.info(f"Goal selected: ({goal_x:.2f}, {goal_y:.2f})")
+
+        # Stop current navigation before replanning
+        if self.is_navigating:
+            self.is_navigating = False
+            asyncio.run_coroutine_threadsafe(self._send_velocity_command(0.0, 0.0), self.loop)
+
+        asyncio.run_coroutine_threadsafe(self._plan_and_execute(goal_x, goal_y), self.loop)
 
     async def _plan_and_execute(self, goal_x: float, goal_y: float):
         """Plan path and execute navigation"""
         self.goal = (goal_x, goal_y)
-        self.goal_plot.set_data([goal_y], [goal_x])
-        self.fig.canvas.draw_idle()
+        if self.fig is not None and self.goal_plot is not None:
+            self.goal_plot.set_data([goal_y], [goal_x])
+            self.fig.canvas.draw_idle()
 
         # Use AMCL pose for planning
         start = (self.amcl_pose[0], self.amcl_pose[1])
@@ -160,8 +300,9 @@ class AMCLNavigator:
         # Visualize path
         path_x = [p[0] for p in self.path]
         path_y = [p[1] for p in self.path]
-        self.path_plot.set_data(path_y, path_x)
-        self.fig.canvas.draw_idle()
+        if self.fig is not None and self.path_plot is not None:
+            self.path_plot.set_data(path_y, path_x)
+            self.fig.canvas.draw_idle()
 
         # Set path for controller
         self.controller.set_path(self.path)
@@ -468,9 +609,8 @@ class AMCLNavigator:
                 logging.info("Ready! Click on map to set goal.")
                 # Don't force update here - let regular update cycle handle it
 
-            # Visualization disabled
-            # if self._scan_count % 50 == 0:
-            #     self._update_visualization()  # DISABLED
+            if self.fig is not None and self._scan_count % 10 == 0:
+                self._update_visualization()
 
         except Exception as e:
             logging.error(f"Error processing lidar message: {e}", exc_info=True)
@@ -566,7 +706,12 @@ class AMCLNavigator:
             logging.error(f"Error updating visualization: {e}")
 
 
+navigator_instance = None
+navigator_ready_event = threading.Event()
+
+
 async def main():
+    navigator = None
     try:
         map_file = "go2_map.pkl"
 
@@ -582,26 +727,25 @@ async def main():
 
         # Initialize navigator AFTER connection (matplotlib can take time)
         logging.info("Initializing navigator and GUI...")
-        navigator = AMCLNavigator(map_file)
+        navigator = AMCLNavigator(map_file, loop=asyncio.get_running_loop(), enable_visualization=True)
         logging.info("Navigator initialized!")
+
+        global navigator_instance
+        navigator_instance = navigator
+        navigator_ready_event.set()
 
         # Create asyncio queue NOW (in correct event loop context)
         navigator.lidar_queue = asyncio.Queue(maxsize=2)
 
         navigator.conn = conn
+        navigator.register_connection_callbacks()
 
-        await conn.datachannel.disableTrafficSaving(True)
-        conn.datachannel.set_decoder(decoder_type='libvoxel')
+        # Configure data channel and subscriptions
+        await navigator.on_connection_ready()
 
         # Don't send stand up command - assume robot is already ready
         logging.info("Robot should be in sport mode already...")
         await asyncio.sleep(0.5)  # Brief delay
-
-        # Subscribe to odometry and lidar
-        # Use SIMPLE SYNC callbacks - they work!
-        conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", navigator.sportmodestate_callback)
-        conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
-        conn.datachannel.pub_sub.subscribe("rt/utlidar/voxel_map_compressed", navigator.lidar_callback)
 
         # Start background tasks
         lidar_task = asyncio.create_task(navigator._process_lidar_queue())
@@ -610,12 +754,11 @@ async def main():
         logging.info("\nWaiting for AMCL to localize robot...")
         logging.info("Move the robot slowly to help localization converge.\n")
 
-        # Keep running - NO GUI
+        # Keep running while async callbacks feed localization and planning
         try:
             logging.info("Running... Press Ctrl+C to stop")
             while True:
-                # No matplotlib - just sleep
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
         finally:
             # Cancel background task on exit
             lidar_task.cancel()
@@ -628,12 +771,13 @@ async def main():
         logging.info("\nStopping...")
         if navigator.conn and navigator.is_navigating:
             await navigator._send_velocity_command(0.0, 0.0)
+        navigator_ready_event.set()
     except Exception as e:
         logging.error(f"Error: {e}", exc_info=True)
+        navigator_ready_event.set()
 
 
 if __name__ == "__main__":
-    import threading
     import time
 
     # Create a new event loop for asyncio
@@ -653,12 +797,20 @@ if __name__ == "__main__":
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,), daemon=True)
     asyncio_thread.start()
 
+    # Wait until navigator is ready, then initialize visualization on the main thread
+    navigator_ready_event.wait()
+    if navigator_instance is not None:
+        navigator_instance.initialize_visualization()
+
     print("\nPress Ctrl+C to stop...")
 
     try:
-        # Main thread just waits
+        # Main thread just waits and services Matplotlib events
         while True:
-            time.sleep(0.1)  # Regular sleep, not asyncio.sleep!
+            if navigator_instance and navigator_instance.fig is not None:
+                plt.pause(0.05)
+            else:
+                time.sleep(0.05)
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
         loop.call_soon_threadsafe(loop.stop)
