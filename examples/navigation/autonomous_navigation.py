@@ -72,7 +72,7 @@ class AutonomousNavigator:
             self.map.origin[0] + self.map.height * self.map.resolution
         ]
         self.map_plot = self.ax.imshow(map_image, cmap='gray', origin='lower',
-                                       extent=extent, vmin=0, vmax=255, alpha=0.8)
+                                       extent=extent, vmin=0, vmax=255, alpha=1.0)
 
         # Initialize plots
         self.path_plot, = self.ax.plot([], [], 'g-', linewidth=2, label='Planned Path')
@@ -90,8 +90,8 @@ class AutonomousNavigator:
 
     def _get_map_image(self):
         """Get map as image"""
-        image = np.ones_like(self.map.data, dtype=np.uint8) * 128
-        image[self.map.data == -1] = 128  # Unknown -> gray
+        image = np.ones_like(self.map.data, dtype=np.uint8) * 205  # Lighter gray for unknown
+        image[self.map.data == -1] = 205  # Unknown -> light gray
         mask_free = (self.map.data >= 0) & (self.map.data < 50)
         image[mask_free] = 255  # Free -> white
         image[self.map.data >= 50] = 0  # Occupied -> black

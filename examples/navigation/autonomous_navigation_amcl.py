@@ -79,7 +79,7 @@ class AMCLNavigator:
             self.map.origin[0] + self.map.height * self.map.resolution
         ]
         self.map_plot = self.ax.imshow(map_image, cmap='gray', origin='lower',
-                                       extent=extent, vmin=0, vmax=255, alpha=0.8)
+                                       extent=extent, vmin=0, vmax=255, alpha=1.0)
 
         # Initialize plots
         self.particles_plot = self.ax.scatter([], [], c='cyan', s=1, alpha=0.3, label='Particles')
@@ -103,11 +103,11 @@ class AMCLNavigator:
 
     def _get_map_image(self):
         """Get map as image"""
-        image = np.ones_like(self.map.data, dtype=np.uint8) * 128
-        image[self.map.data == -1] = 128
+        image = np.ones_like(self.map.data, dtype=np.uint8) * 205  # Lighter gray for unknown
+        image[self.map.data == -1] = 205  # Unknown -> light gray
         mask_free = (self.map.data >= 0) & (self.map.data < 50)
-        image[mask_free] = 255
-        image[self.map.data >= 50] = 0
+        image[mask_free] = 255  # Free -> white
+        image[self.map.data >= 50] = 0  # Occupied -> black
         return image
 
     def _on_click(self, event):
