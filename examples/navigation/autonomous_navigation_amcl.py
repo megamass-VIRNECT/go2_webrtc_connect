@@ -25,13 +25,13 @@ class AMCLNavigator:
         logging.info(f"Map loaded: {self.map.width}x{self.map.height}, resolution={self.map.resolution}m")
 
         # Initialize AMCL for localization
-        self.amcl = AMCL(num_particles=1000)
+        self.amcl = AMCL(num_particles=50)  # Use fewer particles for real-time performance
         # Initialize with map (particles will be spread uniformly)
         self.amcl.initialize(self.map)
-        logging.info("AMCL initialized with 1000 particles")
+        logging.info("AMCL initialized with 50 particles")
 
-        # Initialize planner and controller
-        self.planner = AStarPlanner(inflation_radius=0.3)
+        # Initialize planner and controller (reduce inflation to avoid false obstacles)
+        self.planner = AStarPlanner(inflation_radius=0.15)
         self.controller = PurePursuitController(
             look_ahead_distance=0.8,
             max_linear_velocity=0.3,
@@ -55,6 +55,7 @@ class AMCLNavigator:
 
         # WebRTC connection
         self.conn = None
+        self.reconnecting = False  # Lock to prevent multiple reconnections
 
         # Visualization
         self.fig = None
@@ -139,10 +140,18 @@ class AMCLNavigator:
         start = (self.amcl_pose[0], self.amcl_pose[1])
 
         logging.info(f"Planning path from ({start[0]:.2f}, {start[1]:.2f}) to goal...")
+
+        # Check if start position is valid
+        start_row, start_col = self.map.world_to_map(start[0], start[1])
+        if self.map.is_valid(start_row, start_col):
+            start_occupancy = self.map.data[start_row, start_col]
+            logging.info(f"Start cell occupancy: {start_occupancy} (row={start_row}, col={start_col})")
+
         self.path = self.planner.plan(self.map, start, self.goal)
 
         if self.path is None:
             logging.error("Failed to plan path!")
+            logging.error(f"Try reducing inflation_radius or check if AMCL localization is accurate")
             return
 
         logging.info(f"Path planned with {len(self.path)} waypoints")
@@ -168,7 +177,12 @@ class AMCLNavigator:
             self.is_navigating = False
             return
 
-        rate = 0.1  # 10 Hz
+        rate = 0.5  # 2 Hz - slower to avoid overwhelming connection
+        last_pose = self.amcl_pose
+        pose_stuck_count = 0
+
+        # Wait a bit before starting to ensure connection is stable
+        await asyncio.sleep(0.5)
 
         while self.is_navigating:
             if self.amcl_pose is None:
@@ -177,8 +191,29 @@ class AMCLNavigator:
                 self.is_navigating = False
                 break
 
+            # Check if pose is updating (detect connection loss)
+            if last_pose == self.amcl_pose:
+                pose_stuck_count += 1
+                if pose_stuck_count > 20 and not self.reconnecting:  # 2 seconds without pose update
+                    logging.warning("Pose not updating! Connection may be lost.")
+                    logging.warning("Stopping navigation. Please restart the program.")
+                    await self._send_velocity_command(0.0, 0.0)
+                    self.is_navigating = False
+                    break
+            else:
+                pose_stuck_count = 0
+                last_pose = self.amcl_pose
+
             # Use AMCL pose for control
             linear_vel, angular_vel, goal_reached = self.controller.compute_control(self.amcl_pose)
+
+            # Debug: Log first few control commands
+            if not hasattr(self, '_nav_loop_count'):
+                self._nav_loop_count = 0
+
+            if self._nav_loop_count < 5:
+                logging.info(f"Control: lin={linear_vel:.2f}, ang={angular_vel:.2f}, waypoint={self.controller.current_waypoint_index}/{len(self.path)}, pose=({self.amcl_pose[0]:.2f},{self.amcl_pose[1]:.2f})")
+            self._nav_loop_count += 1
 
             if goal_reached:
                 logging.info("Goal reached!")
@@ -194,8 +229,48 @@ class AMCLNavigator:
 
             await asyncio.sleep(rate)
 
+    async def _reconnect(self) -> bool:
+        """Attempt to reconnect to robot"""
+        try:
+            logging.info("Closing old connection...")
+            # Close old connection
+            if self.conn:
+                try:
+                    await self.conn.close()
+                except:
+                    pass
+
+            # Wait a bit
+            await asyncio.sleep(1)
+
+            # Create new connection
+            logging.info("Creating new connection...")
+            from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
+            self.conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.1.7")
+
+            logging.info("Connecting...")
+            await self.conn.connect()
+
+            # Restore subscriptions
+            await self.conn.datachannel.disableTrafficSaving(True)
+            self.conn.datachannel.set_decoder(decoder_type='libvoxel')
+            self.conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", self.sportmodestate_callback)
+            self.conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
+            self.conn.datachannel.pub_sub.subscribe("rt/utlidar/voxel_map_compressed", self.lidar_callback)
+
+            logging.info("Reconnection successful!")
+            return True
+
+        except Exception as e:
+            logging.error(f"Reconnection failed: {e}")
+            return False
+
     async def _send_velocity_command(self, linear: float, angular: float):
         """Send velocity command to robot"""
+        if self.conn is None:
+            logging.warning("No connection, cannot send velocity command")
+            return
+
         command = {
             "x": float(linear),
             "y": 0.0,
@@ -203,12 +278,18 @@ class AMCLNavigator:
         }
 
         try:
+            # Check if datachannel is still open
+            if not hasattr(self.conn, 'datachannel') or self.conn.datachannel is None:
+                logging.warning("Datachannel not available")
+                return
+
             self.conn.datachannel.pub_sub.publish_without_callback(
                 "rt/api/sport/request",
                 {"api_id": 1008, "parameter": command}
             )
         except Exception as e:
             logging.error(f"Failed to send velocity command: {e}")
+            # Don't raise, just log
 
     def sportmodestate_callback(self, message):
         """Handle odometry updates"""
@@ -285,8 +366,8 @@ class AMCLNavigator:
             if len(points_filtered) == 0:
                 return
 
-            # Downsample
-            downsample_factor = max(1, len(points_filtered) // 360)
+            # Aggressive downsample for AMCL performance (use only ~30 points)
+            downsample_factor = max(1, len(points_filtered) // 30)
             points_filtered = points_filtered[::downsample_factor]
 
             # Convert to polar
@@ -295,35 +376,64 @@ class AMCLNavigator:
             ranges = np.sqrt(x**2 + y**2).tolist()
             angles = np.arctan2(y, x).tolist()
 
+            # Initialize scan counter
+            if not hasattr(self, '_scan_count'):
+                self._scan_count = 0
+
             # Update AMCL with sensor data
             if self.current_odom is not None:
-                self.amcl_pose = self.amcl.update(
-                    tuple(self.current_odom),
-                    ranges,
-                    angles,
-                    self.map
-                )
+                # Debug: Log first update
+                if not hasattr(self, '_first_amcl_update'):
+                    self._first_amcl_update = True
+                    logging.info(f"First AMCL update: odom={self.current_odom}, scan_points={len(ranges)}")
+
+                # Debug: Log before update
+                if self._scan_count % 20 == 0:
+                    logging.info(f"Calling AMCL update... scan={len(ranges)} points")
+
+                try:
+                    self.amcl_pose = self.amcl.update(
+                        tuple(self.current_odom),
+                        ranges,
+                        angles,
+                        self.map
+                    )
+
+                    # Debug: Log after update
+                    if self._scan_count % 20 == 0:
+                        logging.info(f"AMCL update complete. Pose: ({self.amcl_pose[0]:.2f}, {self.amcl_pose[1]:.2f}, {np.degrees(self.amcl_pose[2]):.1f}°)")
+                except Exception as e:
+                    logging.error(f"AMCL update failed: {e}", exc_info=True)
+                    return
 
                 # Get particles for visualization and confidence
                 particles = self.amcl.get_particles()
+
+                # Debug: Log particle count
+                if self._scan_count % 20 == 0:
+                    logging.info(f"AMCL: {len(particles)} particles")
             else:
+                logging.warning("Waiting for odometry data...")
                 return
 
             # Check localization confidence
             self.localization_confidence = self._compute_confidence(particles)
 
-            if self.localization_confidence > 0.7 and not self.is_localized:
+            # Log confidence periodically
+            if self._scan_count % 20 == 0:
+                logging.info(f"Localization confidence: {self.localization_confidence:.3f}")
+
+            if self.localization_confidence > 0.3 and not self.is_localized:  # Lower threshold
                 self.is_localized = True
                 logging.info(f"Robot localized at: ({self.amcl_pose[0]:.2f}, {self.amcl_pose[1]:.2f})")
+                logging.info(f"Confidence: {self.localization_confidence:.3f}")
+                logging.info(f"Map bounds: x=[{self.map.origin[0]:.1f}, {self.map.origin[0] + self.map.height*self.map.resolution:.1f}], y=[{self.map.origin[1]:.1f}, {self.map.origin[1] + self.map.width*self.map.resolution:.1f}]")
                 logging.info("Ready! Click on map to set goal.")
+                # Don't force update here - let regular update cycle handle it
 
-            # Update visualization every 5 scans
-            if hasattr(self, '_scan_count'):
-                self._scan_count += 1
-            else:
-                self._scan_count = 0
-
-            if self._scan_count % 5 == 0:
+            # Update visualization every 20 scans to reduce GUI load
+            self._scan_count += 1
+            if self._scan_count % 20 == 0:
                 self._update_visualization()
 
         except Exception as e:
@@ -351,6 +461,7 @@ class AMCLNavigator:
             if self.amcl_pose is not None:
                 # Update robot position
                 x, y, theta = self.amcl_pose
+                logging.debug(f"Updating viz: robot at ({x:.2f}, {y:.2f})")
                 self.robot_plot.set_data([y], [x])
 
                 # Update robot direction
@@ -379,7 +490,7 @@ class AMCLNavigator:
             status += f"Navigating: {self.is_navigating}"
             self.status_text.set_text(status)
 
-            # Update canvas without blocking
+            # Update canvas (events processed in main loop)
             self.fig.canvas.draw_idle()
 
         except Exception as e:
@@ -408,6 +519,14 @@ async def main():
         await conn.datachannel.disableTrafficSaving(True)
         conn.datachannel.set_decoder(decoder_type='libvoxel')
 
+        # Make robot stand up
+        logging.info("Making robot stand up...")
+        conn.datachannel.pub_sub.publish_without_callback(
+            "rt/api/sport/request",
+            {"api_id": 1001}  # Stand up command
+        )
+        await asyncio.sleep(2)  # Wait for robot to stand
+
         # Subscribe to odometry and lidar
         conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", navigator.sportmodestate_callback)
         conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
@@ -416,9 +535,11 @@ async def main():
         logging.info("\nWaiting for AMCL to localize robot...")
         logging.info("Move the robot slowly to help localization converge.\n")
 
-        # Keep running
+        # Keep running and process GUI events
         while True:
-            await asyncio.sleep(1)
+            # Process matplotlib GUI events
+            plt.pause(0.1)
+            await asyncio.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.info("\nStopping...")

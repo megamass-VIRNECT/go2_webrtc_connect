@@ -245,7 +245,7 @@ class AutonomousNavigator:
                                             head_width=0.2, head_length=0.3,
                                             fc='red', ec='red', alpha=0.8)
 
-            # Update canvas without blocking
+            # Update canvas (events processed in main loop)
             self.fig.canvas.draw_idle()
 
         except Exception as e:
@@ -282,9 +282,11 @@ async def main():
         logging.info("The robot will autonomously navigate to the clicked location.")
         logging.info("Press Ctrl+C to stop.\n")
 
-        # Keep running
+        # Keep running and process GUI events
         while True:
-            await asyncio.sleep(1)
+            # Process matplotlib GUI events
+            plt.pause(0.1)
+            await asyncio.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.info("\nStopping navigation...")
