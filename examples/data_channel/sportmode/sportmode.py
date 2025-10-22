@@ -12,14 +12,14 @@ logging.basicConfig(level=logging.FATAL)
 async def main():
     try:
         # Choose a connection method (uncomment the correct one)
-        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.1.7")
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
         # config = load_webrtc_config()
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"], username=config["email"], password=config["password"])
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
-        config = load_webrtc_config()
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"],
-                                   username=config["user"]["email"], password=config["user"]["password"])
+        # config = load_webrtc_config()
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber=config["sn"],
+        #                            username=config["user"]["email"], password=config["user"]["password"])
         # Connect to the WebRTC service.
         await conn.connect()
 
