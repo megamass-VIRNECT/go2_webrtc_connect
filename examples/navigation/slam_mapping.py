@@ -23,11 +23,11 @@ class SLAMMapper:
     def __init__(self, enable_visualization=True):
         # Initialize SLAM
         slam_params = SLAMParams(
-            map_width=2000,
-            map_height=2000,
-            map_resolution=0.1,  # 10cm resolution for faster processing
-            map_origin=(-100.0, -100.0),  # 200m x 200m map
-            max_range=50.0,  # Reduced for performance
+            map_width=500,
+            map_height=500,
+            map_resolution=0.1,  # 10cm resolution
+            map_origin=(-25.0, -25.0),  # 50m x 50m map
+            max_range=20.0,  # Maximum lidar range
             min_range=0.5
         )
         self.slam = SLAM(slam_params)
@@ -140,24 +140,30 @@ class SLAMMapper:
             if self.prev_odom is None:
                 logging.info(f"First odometry - position: {position}, rpy: {rpy}")
 
-            # Current odometry (x, y, yaw)
+            # Current odometry (x, y, yaw) - position is in world frame
             current_odom = (position[0], position[1], rpy[2])
 
             # Update pose estimate
             if self.prev_odom is not None:
-                # Simple odometry integration
-                dx = current_odom[0] - self.prev_odom[0]
-                dy = current_odom[1] - self.prev_odom[1]
+                # Calculate movement in world frame
+                dx_world = current_odom[0] - self.prev_odom[0]
+                dy_world = current_odom[1] - self.prev_odom[1]
                 dtheta = current_odom[2] - self.prev_odom[2]
 
-                # Debug: Print movement
-                if abs(dx) > 0.01 or abs(dy) > 0.01 or abs(dtheta) > 0.01:
-                    logging.info(f"Robot moved: dx={dx:.3f}, dy={dy:.3f}, dtheta={dtheta:.3f}")
+                # Normalize angle difference
+                while dtheta > np.pi:
+                    dtheta -= 2 * np.pi
+                while dtheta < -np.pi:
+                    dtheta += 2 * np.pi
 
-                # Update current pose
+                # Debug: Print movement
+                if abs(dx_world) > 0.01 or abs(dy_world) > 0.01 or abs(dtheta) > 0.01:
+                    logging.info(f"Robot moved: dx={dx_world:.3f}, dy={dy_world:.3f}, dtheta={dtheta:.3f}")
+
+                # Update current pose directly in world frame
                 x, y, theta = self.current_pose
-                x += dx * np.cos(theta) - dy * np.sin(theta)
-                y += dx * np.sin(theta) + dy * np.cos(theta)
+                x += dx_world
+                y += dy_world
                 theta += dtheta
 
                 # Normalize theta
@@ -165,7 +171,7 @@ class SLAMMapper:
 
                 self.current_pose = (x, y, theta)
 
-                if abs(dx) > 0.01 or abs(dy) > 0.01:
+                if abs(dx_world) > 0.01 or abs(dy_world) > 0.01:
                     logging.info(f"New pose: x={x:.3f}, y={y:.3f}, theta={theta:.3f}")
 
             self.prev_odom = current_odom
@@ -259,34 +265,51 @@ class SLAMMapper:
             if not isinstance(positions, np.ndarray):
                 positions = np.array(positions, dtype=np.float32)
 
-            # Convert positions list to 3D points
-            points = np.array([positions[i:i+3] for i in range(0, len(positions), 3)], dtype=np.float32)
-
-            # Get map origin to convert to robot-centered coordinates
+            # Get voxel map parameters
             origin = data.get("origin", [0.0, 0.0, 0.0])
             width = data.get("width", [128, 128, 38])
             resolution = data.get("resolution", 0.05)
 
-            # Calculate map center (this is roughly where the robot is)
+            # Debug: Print voxel map info
+            if self.scan_count == 0:
+                logging.info(f"Voxel map - Origin: {origin}, Width: {width}, Resolution: {resolution}")
+
+            # CRITICAL FIX: positions are voxel grid INDICES, not world coordinates!
+            # Convert voxel indices to 3D points in world frame
+            voxel_indices = np.array([positions[i:i+3] for i in range(0, len(positions), 3)], dtype=np.float32)
+
+            if self.scan_count == 0 and len(voxel_indices) > 0:
+                logging.info(f"First scan: {len(voxel_indices)} voxels")
+                logging.info(f"Voxel indices range: X=[{voxel_indices[:,0].min()}, {voxel_indices[:,0].max()}], "
+                           f"Y=[{voxel_indices[:,1].min()}, {voxel_indices[:,1].max()}], "
+                           f"Z=[{voxel_indices[:,2].min()}, {voxel_indices[:,2].max()}]")
+
+            # Convert voxel indices to world coordinates
+            # world_pos = origin + (voxel_index * resolution)
+            points = np.zeros_like(voxel_indices)
+            points[:, 0] = origin[0] + (voxel_indices[:, 0] * resolution)
+            points[:, 1] = origin[1] + (voxel_indices[:, 1] * resolution)
+            points[:, 2] = origin[2] + (voxel_indices[:, 2] * resolution)
+
+            if self.scan_count == 0 and len(points) > 0:
+                logging.info(f"World coords range: X=[{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
+                           f"Y=[{points[:,1].min():.2f}, {points[:,1].max():.2f}], "
+                           f"Z=[{points[:,2].min():.2f}, {points[:,2].max():.2f}]")
+
+            # Calculate map center (robot is approximately at the center of voxel map)
             map_center_x = origin[0] + (width[0] * resolution) / 2.0
             map_center_y = origin[1] + (width[1] * resolution) / 2.0
 
-            # Debug: Print point cloud info
             if self.scan_count == 0:
-                logging.info(f"First scan: {len(points)} points")
-                logging.info(f"Map origin: {origin}")
                 logging.info(f"Map center (robot approx): ({map_center_x:.2f}, {map_center_y:.2f})")
-                if len(points) > 0:
-                    logging.info(f"First point example (absolute): {points[0]}")
-                    logging.info(f"Point range (absolute): min={points.min(axis=0)}, max={points.max(axis=0)}")
 
             # Convert to robot-centered coordinates
             points[:, 0] -= map_center_x
             points[:, 1] -= map_center_y
 
             if self.scan_count == 0 and len(points) > 0:
-                logging.info(f"First point (robot-centered): {points[0]}")
-                logging.info(f"Point range (robot-centered): min={points.min(axis=0)}, max={points.max(axis=0)}")
+                logging.info(f"Robot-centered coords range: X=[{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
+                           f"Y=[{points[:,1].min():.2f}, {points[:,1].max():.2f}]")
 
             # Filter out points that are too far or too close
             ranges_temp = np.sqrt(points[:, 0]**2 + points[:, 1]**2)
@@ -308,7 +331,9 @@ class SLAMMapper:
             if self.scan_count % 10 == 0:
                 logging.info(f"After downsampling: {len(points_filtered)} points (factor: {downsample_factor})")
 
-            # Convert point cloud to polar coordinates (range, angle) - vectorized for speed
+            # Convert point cloud to polar coordinates (range, angle)
+            # Points are already in robot frame (x-forward, y-left)
+            # For SLAM, we need angles relative to robot heading
             x = points_filtered[:, 0]
             y = points_filtered[:, 1]
             ranges = np.sqrt(x**2 + y**2).tolist()
@@ -336,8 +361,8 @@ class SLAMMapper:
 
             self.scan_count += 1
 
-            # Update visualization every 20 scans to reduce overhead
-            if self.scan_count % 20 == 0:
+            # Update visualization every 5 scans for faster real-time feedback
+            if self.scan_count % 5 == 0:
                 self.update_visualization()
                 logging.info(f"Processed {self.scan_count} scans. Current pose: "
                            f"x={self.current_pose[0]:.2f}, y={self.current_pose[1]:.2f}, "
@@ -381,8 +406,8 @@ async def main():
         # Set decoder type
         conn.datachannel.set_decoder(decoder_type='libvoxel')
 
-        # Initialize SLAM mapper (disable visualization for debugging)
-        mapper = SLAMMapper(enable_visualization=False)
+        # Initialize SLAM mapper with real-time visualization
+        mapper = SLAMMapper(enable_visualization=True)
 
         # Subscribe to sportmodestate (for position and orientation data)
         conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", mapper.sportmodestate_callback)
@@ -400,15 +425,15 @@ async def main():
         logging.info("Subscribed to LIDAR data")
 
         # Run for specified duration
-        duration = 60  # 1 minute
+        duration = 300  # 5 minutes (increase as needed)
         logging.info(f"Mapping for {duration} seconds... (Press Ctrl+C to stop early)")
 
         try:
             await asyncio.sleep(duration)
-        except KeyboardInterrupt:
-            logging.info("Mapping interrupted by user")
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logging.info("\nMapping interrupted by user")
 
-        # Save the map
+        # Save the map (always save, even if interrupted)
         map_filename = "go2_map.pkl"
         mapper.slam.save_map(map_filename)
         logging.info(f"Map saved to {map_filename}")
@@ -431,6 +456,16 @@ async def main():
             plt.ioff()
             plt.show()
 
+    except KeyboardInterrupt:
+        # Handle Ctrl+C gracefully - save map before exiting
+        logging.info("\n\nKeyboard interrupt detected - saving map before exit...")
+        try:
+            map_filename = "go2_map.pkl"
+            mapper.slam.save_map(map_filename)
+            logging.info(f"Map saved to {map_filename}")
+            logging.info(f"Total scans processed: {mapper.scan_count}")
+        except Exception as e:
+            logging.error(f"Error saving map: {e}")
     except Exception as e:
         logging.error(f"An error occurred: {e}", exc_info=True)
 
@@ -439,5 +474,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nProgram interrupted by user")
+        print("\nProgram interrupted by user - map should be saved")
         sys.exit(0)
