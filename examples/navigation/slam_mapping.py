@@ -199,9 +199,9 @@ class SLAMMapper:
         self.map_plot = self.ax.imshow(map_image, cmap='gray', origin='lower',
                                         extent=extent, vmin=0, vmax=255, alpha=0.8)
 
-        # Initialize trajectory plot
-        self.trajectory_plot, = self.ax.plot([], [], 'r-', linewidth=2, label='Trajectory')
+        # Initialize robot position and direction plots
         self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10, label='Robot')
+        self.robot_arrow = self.ax.arrow(0, 0, 0, 0, head_width=0.3, head_length=0.5, fc='red', ec='red')
         self.ax.legend()
 
         plt.tight_layout()
@@ -217,16 +217,19 @@ class SLAMMapper:
             map_image = self.slam.get_map_image()
             self.map_plot.set_data(map_image)
 
-            # Update trajectory
-            trajectory = self.slam.get_trajectory()
-            if trajectory:
-                traj_x = [p[0] for p in trajectory]
-                traj_y = [p[1] for p in trajectory]
-                self.trajectory_plot.set_data(traj_y, traj_x)
-
             # Update robot position
             x, y, theta = self.current_pose
             self.robot_plot.set_data([y], [x])
+
+            # Update robot direction arrow
+            if self.robot_arrow is not None:
+                self.robot_arrow.remove()
+            arrow_length = 1.0  # 1 meter arrow
+            dx = arrow_length * np.cos(theta)
+            dy = arrow_length * np.sin(theta)
+            self.robot_arrow = self.ax.arrow(y, x, dy, dx,
+                                            head_width=0.3, head_length=0.5,
+                                            fc='red', ec='red', alpha=0.8)
 
             # Update plot
             self.fig.canvas.draw_idle()
