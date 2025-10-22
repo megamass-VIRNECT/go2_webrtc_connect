@@ -27,3 +27,9 @@ output_video.mp4
 
 build/
 /webrtc_config.json
+
+# SLAM map files
+*.pkl
+*.png
+slam_map_final.png
+map_visualization.png
