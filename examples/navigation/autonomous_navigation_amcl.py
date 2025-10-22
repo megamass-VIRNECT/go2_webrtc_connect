@@ -168,6 +168,10 @@ class AMCLNavigator:
         self._subscribe_topics()
         self._enable_lidar_stream()
 
+        # If we had an active goal before disconnect, attempt to resume navigation
+        if self.goal is not None and self.path:
+            asyncio.create_task(self._resume_navigation_after_reconnect())
+
     def _subscribe_topics(self):
         if self.conn is None or self.conn.datachannel is None:
             return
@@ -231,6 +235,19 @@ class AMCLNavigator:
             logging.info("Connection restored")
         finally:
             self._reconnecting = False
+
+    async def _resume_navigation_after_reconnect(self):
+        # Wait for localization to stabilize again
+        for _ in range(20):
+            if self.localization_confidence > 0.3 and self.amcl_pose is not None:
+                break
+            await asyncio.sleep(0.3)
+
+        if self.goal is None:
+            return
+
+        logging.info("Resuming navigation after reconnect")
+        await self._plan_and_execute(self.goal[0], self.goal[1])
 
 
     def _get_map_image(self):
@@ -388,6 +405,10 @@ class AMCLNavigator:
             # Check if datachannel is still open
             if not hasattr(self.conn, 'datachannel') or self.conn.datachannel is None:
                 logging.warning("Datachannel not available")
+                return
+
+            if not getattr(self.conn.datachannel, 'data_channel_opened', False):
+                logging.warning("Datachannel not open; skipping velocity command")
                 return
 
             self.conn.datachannel.pub_sub.publish_without_callback(

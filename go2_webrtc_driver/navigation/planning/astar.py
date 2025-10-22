@@ -64,14 +64,22 @@ class AStarPlanner:
         # Inflate obstacles for safety
         inflated_map = self._inflate_obstacles(occupancy_grid)
 
-        # Check if start or goal are in obstacles
+        # Adjust start or goal if they fall inside inflated obstacles
         if inflated_map[start_row, start_col] > 50:
-            print(f"Start position is in obstacle")
-            return None
+            new_start = self._find_nearest_free_cell(inflated_map, (start_row, start_col))
+            if new_start is None:
+                print(f"Start position is in obstacle and no nearby free cell found")
+                return None
+            print(f"Start position is in obstacle; shifting to nearest free cell at {new_start}")
+            start_row, start_col = new_start
 
         if inflated_map[goal_row, goal_col] > 50:
-            print(f"Goal position is in obstacle")
-            return None
+            new_goal = self._find_nearest_free_cell(inflated_map, (goal_row, goal_col))
+            if new_goal is None:
+                print(f"Goal position is in obstacle and no nearby free cell found")
+                return None
+            print(f"Goal position is in obstacle; shifting to nearest free cell at {new_goal}")
+            goal_row, goal_col = new_goal
 
         # Run A* algorithm
         path_indices = self._astar(inflated_map, (start_row, start_col), (goal_row, goal_col))
@@ -115,6 +123,40 @@ class AStarPlanner:
                             inflated_map[r, c] = max(inflated_map[r, c], 60)
 
         return inflated_map
+
+    def _find_nearest_free_cell(self,
+                                grid_map: np.ndarray,
+                                start: Tuple[int, int],
+                                max_search_cells: int = 50) -> Optional[Tuple[int, int]]:
+        """Find the nearest free cell to the start location."""
+        from collections import deque
+
+        height, width = grid_map.shape
+        visited = set()
+        queue = deque()
+
+        queue.append((start[0], start[1], 0))
+        visited.add((start[0], start[1]))
+
+        while queue:
+            row, col, dist = queue.popleft()
+
+            if grid_map[row, col] <= 50:
+                return (row, col)
+
+            if dist >= max_search_cells:
+                continue
+
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = row + dr, col + dc
+                    if 0 <= nr < height and 0 <= nc < width and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc, dist + 1))
+
+        return None
 
     def _astar(self,
                grid_map: np.ndarray,
