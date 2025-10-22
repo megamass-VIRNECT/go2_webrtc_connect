@@ -23,7 +23,15 @@ class WebRTCDataChannelPubSub:
         if topic in self.subscriptions:
             # Call the registered callback with the message
             callback = self.subscriptions[topic]
-            callback(message)
+            # Support both sync and async callbacks
+            # Sync callbacks run immediately (blocking)
+            # Async callbacks are scheduled as tasks (non-blocking)
+            if asyncio.iscoroutinefunction(callback):
+                # Schedule async callback as a task (non-blocking)
+                asyncio.create_task(callback(message))
+            else:
+                # Call sync callback directly (blocking - should be fast!)
+                callback(message)
         
 
     async def publish(self, topic, data=None, msg_type=None):

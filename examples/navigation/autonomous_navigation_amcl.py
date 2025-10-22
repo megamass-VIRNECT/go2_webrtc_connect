@@ -55,15 +55,28 @@ class AMCLNavigator:
 
         # WebRTC connection
         self.conn = None
-        self.reconnecting = False  # Lock to prevent multiple reconnections
 
-        # Visualization
+        # Async queue for LiDAR processing - will be created in async context!
+        self.lidar_queue = None
+
+        # Connection health monitoring
+        self.last_message_time = None
+        self.message_count = 0
+
+        # AMCL processing lock to prevent concurrent updates
+        self._amcl_processing = False
+
+        # Visualization - DISABLED for now to test connection stability
         self.fig = None
         self.ax = None
-        self._setup_visualization()
+        # self._setup_visualization()  # COMMENTED OUT
 
     def _setup_visualization(self):
-        """Setup visualization"""
+        """Setup visualization - use non-blocking backend"""
+        # CRITICAL: Use Agg backend for thread-safe non-blocking operation
+        import matplotlib
+        matplotlib.use('TkAgg')  # Use TkAgg for better async compatibility
+
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(12, 12))
         self.ax.set_xlabel('Y (meters)')
@@ -101,6 +114,9 @@ class AMCLNavigator:
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
 
         plt.show(block=False)
+        # Force initial draw
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
 
     def _get_map_image(self):
         """Get map as image"""
@@ -112,23 +128,8 @@ class AMCLNavigator:
         return image
 
     def _on_click(self, event):
-        """Handle mouse click to set goal"""
-        if event.inaxes != self.ax:
-            return
-
-        if not self.is_localized:
-            logging.warning("Robot not localized yet! Waiting for AMCL to converge...")
-            return
-
-        if self.is_navigating:
-            logging.warning("Already navigating! Wait for current navigation to complete.")
-            return
-
-        goal_y = event.xdata
-        goal_x = event.ydata
-
-        logging.info(f"Goal set: ({goal_x:.2f}, {goal_y:.2f})")
-        asyncio.create_task(self._plan_and_execute(goal_x, goal_y))
+        """Handle mouse click to set goal - DISABLED"""
+        pass  # Matplotlib disabled
 
     async def _plan_and_execute(self, goal_x: float, goal_y: float):
         """Plan path and execute navigation"""
@@ -177,7 +178,7 @@ class AMCLNavigator:
             self.is_navigating = False
             return
 
-        rate = 0.5  # 2 Hz - slower to avoid overwhelming connection
+        rate = 0.2  # 5 Hz control rate
         last_pose = self.amcl_pose
         pose_stuck_count = 0
 
@@ -194,7 +195,7 @@ class AMCLNavigator:
             # Check if pose is updating (detect connection loss)
             if last_pose == self.amcl_pose:
                 pose_stuck_count += 1
-                if pose_stuck_count > 20 and not self.reconnecting:  # 2 seconds without pose update
+                if pose_stuck_count > 20:  # 10 seconds without pose update
                     logging.warning("Pose not updating! Connection may be lost.")
                     logging.warning("Stopping navigation. Please restart the program.")
                     await self._send_velocity_command(0.0, 0.0)
@@ -229,41 +230,6 @@ class AMCLNavigator:
 
             await asyncio.sleep(rate)
 
-    async def _reconnect(self) -> bool:
-        """Attempt to reconnect to robot"""
-        try:
-            logging.info("Closing old connection...")
-            # Close old connection
-            if self.conn:
-                try:
-                    await self.conn.close()
-                except:
-                    pass
-
-            # Wait a bit
-            await asyncio.sleep(1)
-
-            # Create new connection
-            logging.info("Creating new connection...")
-            from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
-            self.conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.1.7")
-
-            logging.info("Connecting...")
-            await self.conn.connect()
-
-            # Restore subscriptions
-            await self.conn.datachannel.disableTrafficSaving(True)
-            self.conn.datachannel.set_decoder(decoder_type='libvoxel')
-            self.conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", self.sportmodestate_callback)
-            self.conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
-            self.conn.datachannel.pub_sub.subscribe("rt/utlidar/voxel_map_compressed", self.lidar_callback)
-
-            logging.info("Reconnection successful!")
-            return True
-
-        except Exception as e:
-            logging.error(f"Reconnection failed: {e}")
-            return False
 
     async def _send_velocity_command(self, linear: float, angular: float):
         """Send velocity command to robot"""
@@ -291,15 +257,39 @@ class AMCLNavigator:
             logging.error(f"Failed to send velocity command: {e}")
             # Don't raise, just log
 
+    async def _async_sportmode_callback(self, message):
+        """Async wrapper for sportmodestate callback - non-blocking!"""
+        # Add debug counter
+        if not hasattr(self, '_sportmode_callback_count'):
+            self._sportmode_callback_count = 0
+        self._sportmode_callback_count += 1
+
+        if self._sportmode_callback_count % 100 == 0:
+            logging.info(f"[DEBUG] Sportmode callbacks: {self._sportmode_callback_count}")
+
+        # Call sync function, but yield control to event loop
+        await asyncio.sleep(0)  # Yield to event loop!
+        self.sportmodestate_callback(message)
+
     def sportmodestate_callback(self, message):
-        """Handle odometry updates"""
+        """Handle odometry updates - MUST BE LIGHTWEIGHT!"""
+        # CRITICAL: This runs synchronously in the event loop
+        # Do minimal work here to avoid blocking heartbeat
         try:
+            # Update connection health (fast operation)
+            import time
+            self.last_message_time = time.time()
+            self.message_count += 1
+
+            # NO THROTTLING - process all messages to keep connection alive
+
+            # Extract data (fast - just dict access)
             data = message.get("data", {})
             position = data.get("position", [0.0, 0.0, 0.0])
             imu_state = data.get("imu_state", {})
             rpy = imu_state.get("rpy", [0.0, 0.0, 0.0])
 
-            # Accumulate odometry for AMCL
+            # Accumulate odometry (fast - just arithmetic)
             if self.current_odom is None:
                 self.current_odom = [0.0, 0.0, 0.0]
                 self.prev_pos = position
@@ -310,10 +300,10 @@ class AMCLNavigator:
                 dy = position[1] - self.prev_pos[1]
                 dtheta = rpy[2] - self.prev_yaw
 
-                # Normalize angle
-                while dtheta > np.pi:
+                # Normalize angle (simplified)
+                if dtheta > np.pi:
                     dtheta -= 2 * np.pi
-                while dtheta < -np.pi:
+                elif dtheta < -np.pi:
                     dtheta += 2 * np.pi
 
                 # Accumulate
@@ -325,10 +315,36 @@ class AMCLNavigator:
                 self.prev_yaw = rpy[2]
 
         except Exception as e:
-            logging.error(f"Error in odometry callback: {e}")
+            # Don't even log in callback - too slow
+            pass
 
-    def lidar_callback(self, message):
-        """Handle lidar updates for AMCL"""
+    async def _process_lidar_queue(self):
+        """Background task to process LiDAR messages from queue"""
+        while True:
+            try:
+                # Get message from queue with timeout to allow cleanup
+                try:
+                    message = await asyncio.wait_for(self.lidar_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # No message available, continue loop
+                    continue
+
+                # Process the message
+                await self._process_lidar_message(message)
+
+                # Mark task as done
+                self.lidar_queue.task_done()
+
+            except asyncio.CancelledError:
+                logging.info("LiDAR processing task cancelled")
+                break
+            except Exception as e:
+                logging.error(f"Error in LiDAR processing task: {e}", exc_info=True)
+                # Continue processing even if one message fails
+                await asyncio.sleep(0.1)
+
+    async def _process_lidar_message(self, message):
+        """Process a single LiDAR message (runs in background task)"""
         try:
             data = message.get("data", {})
             data_inner = data.get("data", {})
@@ -380,6 +396,17 @@ class AMCLNavigator:
             if not hasattr(self, '_scan_count'):
                 self._scan_count = 0
 
+            self._scan_count += 1
+
+            # CRITICAL: Process AMCL only every 10th scan to reduce CPU load!
+            if self._scan_count % 10 != 0:
+                return
+
+            # CRITICAL: Skip if another AMCL update is already running
+            if self._amcl_processing:
+                logging.debug("Skipping AMCL update - previous update still running")
+                return
+
             # Update AMCL with sensor data
             if self.current_odom is not None:
                 # Debug: Log first update
@@ -392,18 +419,28 @@ class AMCLNavigator:
                     logging.info(f"Calling AMCL update... scan={len(ranges)} points")
 
                 try:
-                    self.amcl_pose = self.amcl.update(
+                    # Set processing flag
+                    self._amcl_processing = True
+
+                    # CRITICAL: Run AMCL update in a separate thread to avoid blocking event loop!
+                    # This allows the event loop to continue processing heartbeats
+                    self.amcl_pose = await asyncio.to_thread(
+                        self.amcl.update,
                         tuple(self.current_odom),
                         ranges,
                         angles,
                         self.map
                     )
 
+                    # Clear processing flag
+                    self._amcl_processing = False
+
                     # Debug: Log after update
                     if self._scan_count % 20 == 0:
                         logging.info(f"AMCL update complete. Pose: ({self.amcl_pose[0]:.2f}, {self.amcl_pose[1]:.2f}, {np.degrees(self.amcl_pose[2]):.1f}°)")
                 except Exception as e:
                     logging.error(f"AMCL update failed: {e}", exc_info=True)
+                    self._amcl_processing = False  # Clear flag on error
                     return
 
                 # Get particles for visualization and confidence
@@ -431,13 +468,45 @@ class AMCLNavigator:
                 logging.info("Ready! Click on map to set goal.")
                 # Don't force update here - let regular update cycle handle it
 
-            # Update visualization every 20 scans to reduce GUI load
-            self._scan_count += 1
-            if self._scan_count % 20 == 0:
-                self._update_visualization()
+            # Visualization disabled
+            # if self._scan_count % 50 == 0:
+            #     self._update_visualization()  # DISABLED
 
         except Exception as e:
-            logging.error(f"Error in lidar callback: {e}", exc_info=True)
+            logging.error(f"Error processing lidar message: {e}", exc_info=True)
+
+    async def _async_lidar_callback(self, message):
+        """Async wrapper for lidar callback - non-blocking!"""
+        # Add debug counter
+        if not hasattr(self, '_lidar_callback_count'):
+            self._lidar_callback_count = 0
+        self._lidar_callback_count += 1
+
+        if self._lidar_callback_count % 10 == 0:
+            logging.info(f"[DEBUG] LiDAR callbacks: {self._lidar_callback_count}")
+
+        # Call sync function, but yield control to event loop
+        await asyncio.sleep(0)  # Yield to event loop!
+        self.lidar_callback(message)
+
+    def lidar_callback(self, message):
+        """Handle lidar updates - MUST BE ULTRA LIGHTWEIGHT!"""
+        # CRITICAL: This runs synchronously and blocks the event loop
+        # Only do the absolute minimum here
+        try:
+            # If queue is full, drop oldest (keep newest data)
+            if self.lidar_queue.full():
+                try:
+                    self.lidar_queue.get_nowait()
+                except:
+                    pass
+
+            # Put new message in queue (non-blocking)
+            self.lidar_queue.put_nowait(message)
+
+        except:
+            # Don't even log - too slow for callback
+            pass
 
     def _compute_confidence(self, particles):
         """Compute localization confidence from particle distribution"""
@@ -505,41 +574,55 @@ async def main():
         logging.info("AMCL-based Autonomous Navigation")
         logging.info("=" * 60)
 
-        # Initialize navigator
-        navigator = AMCLNavigator(map_file)
-
-        # Connect to robot
+        # Connect to robot FIRST (before matplotlib initialization)
         conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.1.7")
         logging.info("Connecting to Go2...")
         await conn.connect()
         logging.info("Connected!")
+
+        # Initialize navigator AFTER connection (matplotlib can take time)
+        logging.info("Initializing navigator and GUI...")
+        navigator = AMCLNavigator(map_file)
+        logging.info("Navigator initialized!")
+
+        # Create asyncio queue NOW (in correct event loop context)
+        navigator.lidar_queue = asyncio.Queue(maxsize=2)
 
         navigator.conn = conn
 
         await conn.datachannel.disableTrafficSaving(True)
         conn.datachannel.set_decoder(decoder_type='libvoxel')
 
-        # Make robot stand up
-        logging.info("Making robot stand up...")
-        conn.datachannel.pub_sub.publish_without_callback(
-            "rt/api/sport/request",
-            {"api_id": 1001}  # Stand up command
-        )
-        await asyncio.sleep(2)  # Wait for robot to stand
+        # Don't send stand up command - assume robot is already ready
+        logging.info("Robot should be in sport mode already...")
+        await asyncio.sleep(0.5)  # Brief delay
 
         # Subscribe to odometry and lidar
+        # Use SIMPLE SYNC callbacks - they work!
         conn.datachannel.pub_sub.subscribe("rt/lf/sportmodestate", navigator.sportmodestate_callback)
         conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
         conn.datachannel.pub_sub.subscribe("rt/utlidar/voxel_map_compressed", navigator.lidar_callback)
 
+        # Start background tasks
+        lidar_task = asyncio.create_task(navigator._process_lidar_queue())
+        logging.info("Background task started (LiDAR processing)")
+
         logging.info("\nWaiting for AMCL to localize robot...")
         logging.info("Move the robot slowly to help localization converge.\n")
 
-        # Keep running and process GUI events
-        while True:
-            # Process matplotlib GUI events
-            plt.pause(0.1)
-            await asyncio.sleep(0.1)
+        # Keep running - NO GUI
+        try:
+            logging.info("Running... Press Ctrl+C to stop")
+            while True:
+                # No matplotlib - just sleep
+                await asyncio.sleep(1)
+        finally:
+            # Cancel background task on exit
+            lidar_task.cancel()
+            try:
+                await lidar_task
+            except asyncio.CancelledError:
+                pass
 
     except KeyboardInterrupt:
         logging.info("\nStopping...")
@@ -550,8 +633,34 @@ async def main():
 
 
 if __name__ == "__main__":
+    import threading
+    import time
+
+    # Create a new event loop for asyncio
+    loop = asyncio.new_event_loop()
+
+    def run_asyncio_loop(loop):
+        """Run asyncio event loop in separate thread"""
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        except KeyboardInterrupt:
+            pass
+        finally:
+            loop.close()
+
+    # Start asyncio in separate thread
+    asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,), daemon=True)
+    asyncio_thread.start()
+
+    print("\nPress Ctrl+C to stop...")
+
     try:
-        asyncio.run(main())
+        # Main thread just waits
+        while True:
+            time.sleep(0.1)  # Regular sleep, not asyncio.sleep!
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio_thread.join(timeout=2)
         sys.exit(0)

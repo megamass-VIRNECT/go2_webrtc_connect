@@ -158,16 +158,24 @@ class Go2WebRTCConnection:
         async def on_track(track):
             logging.info("Track recieved: %s", track.kind)
 
-            if track.kind == "video":
-                #await for the first frame, #ToDo make the code more nicer
-                frame = await track.recv()
-                await self.video.track_handler(track)
-                
-            if track.kind == "audio":
-                frame = await track.recv()
-                while True:
+            try:
+                if track.kind == "video":
+                    #await for the first frame, #ToDo make the code more nicer
                     frame = await track.recv()
-                    await self.audio.frame_handler(frame)
+                    await self.video.track_handler(track)
+
+                if track.kind == "audio":
+                    frame = await track.recv()
+                    while True:
+                        try:
+                            frame = await track.recv()
+                            await self.audio.frame_handler(frame)
+                        except Exception as e:
+                            logging.debug(f"Audio track recv error: {e}")
+                            break
+            except Exception as e:
+                logging.warning(f"Track {track.kind} ended: {e}")
+                # Track ended, this is normal when connection closes
 
         logging.info("Creating offer...")
         offer = await self.pc.createOffer()
