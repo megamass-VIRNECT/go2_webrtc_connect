@@ -7,6 +7,8 @@ import asyncio
 import logging
 import sys
 import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for better async compatibility
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
@@ -245,8 +247,9 @@ class AutonomousNavigator:
                                             head_width=0.2, head_length=0.3,
                                             fc='red', ec='red', alpha=0.8)
 
+            # Use draw_idle and pause to prevent blocking
             self.fig.canvas.draw_idle()
-            self.fig.canvas.flush_events()
+            plt.pause(0.001)  # Small pause to process events
 
         except Exception as e:
             logging.error(f"Error updating visualization: {e}")

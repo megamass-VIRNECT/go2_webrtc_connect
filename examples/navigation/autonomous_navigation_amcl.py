@@ -7,6 +7,8 @@ import asyncio
 import logging
 import sys
 import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for better async compatibility
 import matplotlib.pyplot as plt
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.navigation import load_map, AMCL
@@ -379,8 +381,9 @@ class AMCLNavigator:
             status += f"Navigating: {self.is_navigating}"
             self.status_text.set_text(status)
 
+            # Use draw_idle and pause to prevent blocking
             self.fig.canvas.draw_idle()
-            self.fig.canvas.flush_events()
+            plt.pause(0.001)  # Small pause to process events
 
         except Exception as e:
             logging.error(f"Error updating visualization: {e}")
