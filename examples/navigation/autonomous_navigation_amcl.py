@@ -131,9 +131,8 @@ class AMCLNavigator:
 
         # State
         self.current_pose = (0.0, 0.0, 0.0)
-        self.amcl_pose = None
-        self.odom_pose = None  # Odometry-based pose for navigation
-        self.current_odom = None  # Current accumulated odometry for AMCL
+        self.amcl_pose = None  # AMCL pose (continuously updated)
+        self.current_odom = None  # Current accumulated odometry for AMCL input
         self.last_scan = None  # Store last lidar scan
         self.last_scan_angles = None
         self.path = None
@@ -519,12 +518,10 @@ class AMCLNavigator:
         # Set path for controller
         self.controller.set_path(self.path)
 
-        # Start navigation - save current AMCL pose as reference
+        # Start navigation - use continuous AMCL pose updates
         self.is_navigating = True
-        self.nav_start_amcl_pose = self.amcl_pose
-        self.nav_start_odom = list(self.current_odom) if self.current_odom else [0, 0, 0]
         logging.info("Starting navigation...")
-        logging.info(f"Navigation baseline: AMCL={self.nav_start_amcl_pose}, odom={self.nav_start_odom}")
+        logging.info(f"Starting from AMCL pose: {self.amcl_pose}")
         await self._navigate()
 
     async def _navigate(self):
@@ -542,8 +539,8 @@ class AMCLNavigator:
         await asyncio.sleep(0.5)
 
         while self.is_navigating:
-            # Use odometry-based pose during navigation (AMCL updates stopped)
-            current_nav_pose = self.odom_pose if self.odom_pose is not None else self.amcl_pose
+            # Use AMCL pose continuously updated during navigation
+            current_nav_pose = self.amcl_pose
 
             if current_nav_pose is None:
                 logging.warning("Lost localization!")
@@ -552,9 +549,10 @@ class AMCLNavigator:
                 break
 
             # Check if pose is updating (detect connection loss)
+            # AMCL updates are slow (3-6s), so allow longer timeout
             if last_pose == current_nav_pose:
                 pose_stuck_count += 1
-                if pose_stuck_count > 20:  # 10 seconds without pose update
+                if pose_stuck_count > 50:  # 25 seconds without pose update (AMCL is slow)
                     logging.warning("Pose not updating! Connection may be lost.")
                     logging.warning("Stopping navigation. Please restart the program.")
                     await self._send_velocity_command(0.0, 0.0)
@@ -692,7 +690,6 @@ class AMCLNavigator:
             # Accumulate odometry (fast - just arithmetic)
             if self.current_odom is None:
                 self.current_odom = [0.0, 0.0, 0.0]
-                self.odom_pose = [0.0, 0.0, 0.0]
                 self.prev_pos = position
                 self.prev_yaw = rpy[2]
             else:
@@ -712,18 +709,8 @@ class AMCLNavigator:
                 self.current_odom[1] += dy
                 self.current_odom[2] += dtheta
 
-                # Update odometry pose (for navigation)
-                if self.is_navigating and hasattr(self, 'nav_start_amcl_pose') and hasattr(self, 'nav_start_odom'):
-                    # During navigation: use odometry offset from navigation start point
-                    odom_delta_x = self.current_odom[0] - self.nav_start_odom[0]
-                    odom_delta_y = self.current_odom[1] - self.nav_start_odom[1]
-                    odom_delta_theta = self.current_odom[2] - self.nav_start_odom[2]
-
-                    self.odom_pose = [
-                        self.nav_start_amcl_pose[0] + odom_delta_x,
-                        self.nav_start_amcl_pose[1] + odom_delta_y,
-                        self.nav_start_amcl_pose[2] + odom_delta_theta
-                    ]
+                # Odometry is only used as input to AMCL, not for navigation
+                # Navigation uses AMCL pose directly (updated continuously)
 
                 self.prev_pos = position
                 self.prev_yaw = rpy[2]
@@ -750,18 +737,17 @@ class AMCLNavigator:
                 self._scan_count = 0
             self._scan_count += 1
 
-            # Process less frequently - only every 20th scan (for slow AMCL)
-            if self._scan_count % 20 != 0:
+            # Process less frequently - only every 10th scan
+            # AMCL is slow (3-6s) but runs in separate process (non-blocking)
+            if self._scan_count % 10 != 0:
                 return
 
             # Don't send if we don't have odometry yet
             if self.current_odom is None:
                 return
 
-            # CRITICAL: Don't update AMCL during navigation (too slow!)
-            # Only update when idle
-            if self.is_navigating:
-                return
+            # AMCL runs in separate process, so it won't block main loop
+            # Continue updating position even during navigation for accuracy
 
             # Quick preprocessing (fast operations only)
             if not isinstance(positions, np.ndarray):
