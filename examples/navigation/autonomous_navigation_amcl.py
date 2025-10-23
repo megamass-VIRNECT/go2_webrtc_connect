@@ -229,7 +229,7 @@ class AMCLNavigator:
         self.path_plot, = self.ax.plot([], [], 'g-', linewidth=2, label='Planned Path')
         self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10, label='Robot (AMCL)')
         self.robot_arrow = None
-        self.goal_plot, = self.ax.plot([], [], 'r*', markersize=20, label='Goal')
+        self.goal_plot, = self.ax.plot([], [], 'r^', markersize=15, label='Goal')
 
         # Status text
         self.status_text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes,
@@ -856,6 +856,9 @@ class AMCLNavigator:
                         logging.info(f"Confidence: {self.localization_confidence:.3f}")
                         logging.info(f"Map bounds: x=[{self.map.origin[0]:.1f}, {self.map.origin[0] + self.map.height*self.map.resolution:.1f}], y=[{self.map.origin[1]:.1f}, {self.map.origin[1] + self.map.width*self.map.resolution:.1f}]")
                         logging.info("Ready! Click on map to set goal.")
+                        # Show robot position immediately on first localization
+                        if self.fig is not None:
+                            self._update_visualization()
 
                     # Update visualization periodically
                     if result['update_count'] % 5 == 0 and self.fig is not None:

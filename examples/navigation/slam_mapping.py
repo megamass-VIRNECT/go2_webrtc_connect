@@ -23,10 +23,10 @@ class SLAMMapper:
     def __init__(self, enable_visualization=True):
         # Initialize SLAM
         slam_params = SLAMParams(
-            map_width=500,
-            map_height=500,
+            map_width=400,
+            map_height=400,
             map_resolution=0.1,  # 10cm resolution
-            map_origin=(-25.0, -25.0),  # 50m x 50m map
+            map_origin=(-20.0, -20.0),  # 40m x 40m map
             max_range=20.0,  # Maximum lidar range
             min_range=0.5
         )
@@ -202,6 +202,12 @@ class SLAMMapper:
         # Initialize robot position and direction plots
         self.robot_plot, = self.ax.plot([], [], 'bo', markersize=10, label='Robot')
         self.robot_arrow = self.ax.arrow(0, 0, 0, 0, head_width=0.3, head_length=0.5, fc='red', ec='red')
+
+        # Add status text
+        self.status_text = self.ax.text(0.02, 0.98, '', transform=self.ax.transAxes,
+                                        verticalalignment='top', bbox=dict(boxstyle='round',
+                                        facecolor='wheat', alpha=0.8), fontsize=9)
+
         self.ax.legend()
 
         plt.tight_layout()
@@ -219,17 +225,27 @@ class SLAMMapper:
 
             # Update robot position
             x, y, theta = self.current_pose
+            # Flip theta to correct direction (coordinates are inverted)
+            theta_corrected = -theta
             self.robot_plot.set_data([y], [x])
 
             # Update robot direction arrow
             if self.robot_arrow is not None:
                 self.robot_arrow.remove()
             arrow_length = 1.0  # 1 meter arrow
-            dx = arrow_length * np.cos(theta)
-            dy = arrow_length * np.sin(theta)
+            dx = arrow_length * np.cos(theta_corrected)
+            dy = arrow_length * np.sin(theta_corrected)
             self.robot_arrow = self.ax.arrow(y, x, dy, dx,
                                             head_width=0.3, head_length=0.5,
                                             fc='red', ec='red', alpha=0.8)
+
+            # Update status text
+            status_str = f'Robot Pose:\n'
+            status_str += f'  X: {x:.2f}m\n'
+            status_str += f'  Y: {y:.2f}m\n'
+            status_str += f'  θ: {np.degrees(theta):.1f}°\n'
+            status_str += f'  θ_display: {np.degrees(theta_corrected):.1f}°'
+            self.status_text.set_text(status_str)
 
             # Update plot
             self.fig.canvas.draw_idle()
@@ -427,14 +443,40 @@ async def main():
         conn.datachannel.pub_sub.subscribe("rt/utlidar/voxel_map_compressed", mapper.lidar_callback)
         logging.info("Subscribed to LIDAR data")
 
+        # Keep-alive task to prevent WebRTC consent timeout
+        async def keep_alive():
+            """Periodically request data to keep WebRTC connection alive"""
+            from go2_webrtc_driver.constants import RTC_TOPIC
+            while True:
+                try:
+                    await asyncio.sleep(10)  # Every 10 seconds
+                    # Request motion mode status to keep connection active
+                    await conn.datachannel.pub_sub.publish_request_new(
+                        RTC_TOPIC["MOTION_SWITCHER"],
+                        {"api_id": 1001}
+                    )
+                except Exception as e:
+                    logging.debug(f"Keep-alive error (expected on shutdown): {e}")
+                    break
+
+        # Start keep-alive task
+        keep_alive_task = asyncio.create_task(keep_alive())
+
         # Run for specified duration
-        duration = 300  # 5 minutes (increase as needed)
-        logging.info(f"Mapping for {duration} seconds... (Press Ctrl+C to stop early)")
+        duration = 600  # 10 minutes (increase as needed)
+        logging.info(f"Mapping for {duration} seconds ({duration//60} minutes)... (Press Ctrl+C to stop early)")
 
         try:
             await asyncio.sleep(duration)
         except (KeyboardInterrupt, asyncio.CancelledError):
             logging.info("\nMapping interrupted by user")
+        finally:
+            # Cancel keep-alive task
+            keep_alive_task.cancel()
+            try:
+                await keep_alive_task
+            except asyncio.CancelledError:
+                pass
 
         # Save the map (always save, even if interrupted)
         map_filename = "go2_map.pkl"
