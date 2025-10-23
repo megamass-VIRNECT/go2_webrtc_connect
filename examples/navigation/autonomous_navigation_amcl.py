@@ -176,11 +176,25 @@ class AMCLNavigator:
         if self.conn is None or self.conn.datachannel is None:
             return
 
+        self._subscription_topics = [
+            ("rt/lf/sportmodestate", self.sportmodestate_callback),
+            ("rt/utlidar/voxel_map_compressed", self.lidar_callback),
+        ]
+
+
         for topic, callback in self._subscription_topics:
             try:
                 self.conn.datachannel.pub_sub.subscribe(topic, callback)
             except Exception as exc:
                 logging.error(f"Failed to subscribe to {topic}: {exc}")
+
+
+            conn.datachannel.pub_sub.subscribe(
+                "rt/utlidar/voxel_map_compressed",
+                lambda message: asyncio.create_task(lidar_callback_task(message))
+            )
+
+
 
     def _enable_lidar_stream(self):
         if self.conn is None or self.conn.datachannel is None:
@@ -415,6 +429,7 @@ class AMCLNavigator:
                 "rt/api/sport/request",
                 {"api_id": 1008, "parameter": command}
             )
+
         except Exception as e:
             logging.error(f"Failed to send velocity command: {e}")
             # Don't raise, just log
