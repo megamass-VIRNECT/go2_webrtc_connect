@@ -13,6 +13,7 @@ from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectio
 from go2_webrtc_driver.navigation import load_map, AMCL
 from go2_webrtc_driver.navigation.planning import AStarPlanner
 from go2_webrtc_driver.navigation.control import PurePursuitController
+from go2_webrtc_driver.constants import RTC_TOPIC, SPORT_CMD
 
 logging.basicConfig(level=logging.INFO)
 
@@ -90,10 +91,6 @@ class AMCLNavigator:
         # Connection management
         self._connection_callbacks_registered = False
         self._reconnecting = False
-        self._subscription_topics = [
-            ("rt/lf/sportmodestate", self.sportmodestate_callback),
-            ("rt/utlidar/voxel_map_compressed", self.lidar_callback),
-        ]
 
         if self.visualization_requested and threading.current_thread() is threading.main_thread():
             self._setup_visualization()
@@ -176,32 +173,22 @@ class AMCLNavigator:
         if self.conn is None or self.conn.datachannel is None:
             return
 
-        self._subscription_topics = [
-            ("rt/lf/sportmodestate", self.sportmodestate_callback),
-            ("rt/utlidar/voxel_map_compressed", self.lidar_callback),
-        ]
+        self.conn.datachannel.pub_sub.subscribe(
+            "rt/lf/sportmodestate",
+            self.sportmodestate_callback
+        )
 
-
-        for topic, callback in self._subscription_topics:
-            try:
-                self.conn.datachannel.pub_sub.subscribe(topic, callback)
-            except Exception as exc:
-                logging.error(f"Failed to subscribe to {topic}: {exc}")
-
-
-            conn.datachannel.pub_sub.subscribe(
-                "rt/utlidar/voxel_map_compressed",
-                lambda message: asyncio.create_task(lidar_callback_task(message))
-            )
-
-
+        self.conn.datachannel.pub_sub.subscribe(
+            "rt/utlidar/voxel_map_compressed",
+            lambda message: asyncio.create_task(self.lidar_callback_task(message))
+        )
 
     def _enable_lidar_stream(self):
         if self.conn is None or self.conn.datachannel is None:
             return
 
         try:
-            self.conn.datachannel.pub_sub.publish_without_callback("rt/utlidar/switch", "on")
+            self.conn.datachannel.pub_sub.publish_without_callback(RTC_TOPIC["ULIDAR_SWITCH"], "on")
         except Exception as exc:
             logging.error(f"Failed to enable LiDAR stream: {exc}")
 
@@ -426,8 +413,11 @@ class AMCLNavigator:
                 return
 
             self.conn.datachannel.pub_sub.publish_without_callback(
-                "rt/api/sport/request",
-                {"api_id": 1008, "parameter": command}
+                RTC_TOPIC["SPORT_MOD"],
+                {
+                    "api_id": SPORT_CMD["Move"],
+                    "parameter": command
+                }
             )
 
         except Exception as e:
@@ -495,33 +485,8 @@ class AMCLNavigator:
             # Don't even log in callback - too slow
             pass
 
-    async def _process_lidar_queue(self):
-        """Background task to process LiDAR messages from queue"""
-        while True:
-            try:
-                # Get message from queue with timeout to allow cleanup
-                try:
-                    message = await asyncio.wait_for(self.lidar_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    # No message available, continue loop
-                    continue
-
-                # Process the message
-                await self._process_lidar_message(message)
-
-                # Mark task as done
-                self.lidar_queue.task_done()
-
-            except asyncio.CancelledError:
-                logging.info("LiDAR processing task cancelled")
-                break
-            except Exception as e:
-                logging.error(f"Error in LiDAR processing task: {e}", exc_info=True)
-                # Continue processing even if one message fails
-                await asyncio.sleep(0.1)
-
-    async def _process_lidar_message(self, message):
-        """Process a single LiDAR message (runs in background task)"""
+    async def lidar_callback_task(self, message):
+        """Process a single LiDAR message as async task"""
         try:
             data = message.get("data", {})
             data_inner = data.get("data", {})
@@ -651,38 +616,6 @@ class AMCLNavigator:
         except Exception as e:
             logging.error(f"Error processing lidar message: {e}", exc_info=True)
 
-    async def _async_lidar_callback(self, message):
-        """Async wrapper for lidar callback - non-blocking!"""
-        # Add debug counter
-        if not hasattr(self, '_lidar_callback_count'):
-            self._lidar_callback_count = 0
-        self._lidar_callback_count += 1
-
-        if self._lidar_callback_count % 10 == 0:
-            logging.info(f"[DEBUG] LiDAR callbacks: {self._lidar_callback_count}")
-
-        # Call sync function, but yield control to event loop
-        await asyncio.sleep(0)  # Yield to event loop!
-        self.lidar_callback(message)
-
-    def lidar_callback(self, message):
-        """Handle lidar updates - MUST BE ULTRA LIGHTWEIGHT!"""
-        # CRITICAL: This runs synchronously and blocks the event loop
-        # Only do the absolute minimum here
-        try:
-            # If queue is full, drop oldest (keep newest data)
-            if self.lidar_queue.full():
-                try:
-                    self.lidar_queue.get_nowait()
-                except:
-                    pass
-
-            # Put new message in queue (non-blocking)
-            self.lidar_queue.put_nowait(message)
-
-        except:
-            # Don't even log - too slow for callback
-            pass
 
     def _compute_confidence(self, particles):
         """Compute localization confidence from particle distribution"""
@@ -770,9 +703,6 @@ async def main():
         navigator_instance = navigator
         navigator_ready_event.set()
 
-        # Create asyncio queue NOW (in correct event loop context)
-        navigator.lidar_queue = asyncio.Queue(maxsize=2)
-
         navigator.conn = conn
         navigator.register_connection_callbacks()
 
@@ -783,25 +713,13 @@ async def main():
         logging.info("Robot should be in sport mode already...")
         await asyncio.sleep(0.5)  # Brief delay
 
-        # Start background tasks
-        lidar_task = asyncio.create_task(navigator._process_lidar_queue())
-        logging.info("Background task started (LiDAR processing)")
-
         logging.info("\nWaiting for AMCL to localize robot...")
         logging.info("Move the robot slowly to help localization converge.\n")
 
         # Keep running while async callbacks feed localization and planning
-        try:
-            logging.info("Running... Press Ctrl+C to stop")
-            while True:
-                await asyncio.sleep(0.1)
-        finally:
-            # Cancel background task on exit
-            lidar_task.cancel()
-            try:
-                await lidar_task
-            except asyncio.CancelledError:
-                pass
+        logging.info("Running... Press Ctrl+C to stop")
+        while True:
+            await asyncio.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.info("\nStopping...")
