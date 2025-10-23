@@ -95,7 +95,7 @@ class WebRTCDataChannelPubSub:
     async def publish_request_new(self, topic, options=None):
         # Generate a unique identifier
         generated_id = int(time.time() * 1000) % 2147483648 + random.randint(0, 1000)
-        
+
         # Check if api_id is provided
         if not (options and "api_id" in options):
             print("Error: Please provide app id")
@@ -124,6 +124,14 @@ class WebRTCDataChannelPubSub:
 
         # Publish the request
         return await self.publish(topic, request_payload, DATA_CHANNEL_TYPE["REQUEST"])
+
+    def publish_request_no_wait(self, topic, options=None):
+        """
+        Send a request without waiting for response (fire and forget)
+        Uses the same "req" message type as publish_request_new but doesn't block
+        Useful for high-frequency commands like robot movement (5Hz control loop)
+        """
+        asyncio.create_task(self.publish_request_new(topic, options))
     
     def subscribe(self, topic, callback=None):
         channel = self.channel

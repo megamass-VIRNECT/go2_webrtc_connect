@@ -11,8 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 import queue
-from multiprocessing import Process, Queue, Event, Value
-from ctypes import c_bool
+from multiprocessing import Process, Queue, Event
 from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
 from go2_webrtc_driver.navigation import load_map, AMCL
 from go2_webrtc_driver.navigation.planning import AStarPlanner
@@ -24,29 +23,48 @@ logging.basicConfig(level=logging.INFO)
 
 def amcl_worker_process(map_file: str, input_queue: Queue, output_queue: Queue, stop_event: Event):
     """
-    Dedicated process for AMCL processing - runs completely independently
-    This ensures AMCL computation never blocks the main event loop
+    Dedicated PROCESS for AMCL - completely independent from main event loop
+    This is CRITICAL - Thread won't work due to Python GIL blocking heartbeat
     """
+    import time
+    update_count = 0
+
     try:
-        # Load map in worker process
+        # Load map
         map_obj = load_map(map_file)
-        amcl = AMCL(num_particles=50)
+        amcl = AMCL(num_particles=20)  # Minimal particles for real-time performance
         amcl.initialize(map_obj)
 
-        logging.info(f"[AMCL Worker] Initialized with map {map_obj.width}x{map_obj.height}")
+        # Send init confirmation
+        output_queue.put({'type': 'init', 'msg': f"AMCL initialized: {map_obj.width}x{map_obj.height}"})
 
         while not stop_event.is_set():
             try:
-                # Non-blocking get with timeout
+                # Get data with timeout
                 data = input_queue.get(timeout=0.1)
 
+                update_count += 1
                 odom = data['odom']
                 ranges = data['ranges']
                 angles = data['angles']
 
-                # Perform AMCL update (heavy computation happens here, isolated)
+                start_time = time.time()
+
+                # Perform AMCL update
                 pose = amcl.update(tuple(odom), ranges, angles, map_obj)
+
+                update_time = time.time() - start_time
+
                 particles = amcl.get_particles()
+
+                elapsed = time.time() - start_time
+
+                # Log slow updates
+                if elapsed > 1.0:
+                    output_queue.put({
+                        'type': 'warning',
+                        'msg': f"Slow AMCL update #{update_count}: {elapsed:.2f}s (scan_points={len(ranges)}, particles={len(particles)})"
+                    })
 
                 # Compute confidence
                 weights = np.array([p.weight for p in particles])
@@ -57,33 +75,33 @@ def amcl_worker_process(map_file: str, input_queue: Queue, output_queue: Queue, 
                 else:
                     confidence = 0.0
 
-                # Send result back (non-blocking)
+                # Send result back
                 result = {
+                    'type': 'update',
                     'pose': pose,
                     'confidence': confidence,
-                    'particles': [(p.x, p.y, p.theta, p.weight) for p in particles[::5]]  # Subsample for IPC
+                    'particles': [(p.x, p.y, p.theta, p.weight) for p in particles[::3]],
+                    'update_count': update_count,
+                    'elapsed': elapsed
                 }
 
-                # Use non-blocking put with try/except
+                # Non-blocking put - if queue full, replace old data
                 try:
                     output_queue.put_nowait(result)
-                except queue.Full:
-                    # Drop old result if queue is full
+                except:
                     try:
-                        output_queue.get_nowait()
-                        output_queue.put_nowait(result)
+                        output_queue.get_nowait()  # Remove old
+                        output_queue.put_nowait(result)  # Add new
                     except:
                         pass
 
             except queue.Empty:
                 continue
             except Exception as e:
-                logging.error(f"[AMCL Worker] Error: {e}", exc_info=True)
+                output_queue.put({'type': 'error', 'msg': str(e)})
 
     except Exception as e:
-        logging.error(f"[AMCL Worker] Fatal error: {e}", exc_info=True)
-    finally:
-        logging.info("[AMCL Worker] Shutting down")
+        output_queue.put({'type': 'fatal', 'msg': str(e)})
 
 
 class AMCLNavigator:
@@ -95,12 +113,12 @@ class AMCLNavigator:
         self.map = load_map(map_file)
         logging.info(f"Map loaded: {self.map.width}x{self.map.height}, resolution={self.map.resolution}m")
 
-        # AMCL processing in separate process (CRITICAL: no blocking!)
-        self.amcl_input_queue = Queue(maxsize=2)  # Small queue - only latest data matters
-        self.amcl_output_queue = Queue(maxsize=2)
+        # AMCL processing in separate PROCESS (CRITICAL: no GIL blocking!)
+        self.amcl_input_queue = Queue(maxsize=2)
+        self.amcl_output_queue = Queue(maxsize=10)  # Larger output queue
         self.amcl_stop_event = Event()
         self.amcl_process = None
-        self.particles_cache = []  # Cache for visualization
+        self.particles_cache = []
 
         # Initialize planner and controller (reduce inflation to avoid false obstacles)
         self.planner = AStarPlanner(inflation_radius=0.15)
@@ -114,6 +132,7 @@ class AMCLNavigator:
         # State
         self.current_pose = (0.0, 0.0, 0.0)
         self.amcl_pose = None
+        self.odom_pose = None  # Odometry-based pose for navigation
         self.current_odom = None  # Current accumulated odometry for AMCL
         self.last_scan = None  # Store last lidar scan
         self.last_scan_angles = None
@@ -162,7 +181,7 @@ class AMCLNavigator:
         if self.visualization_requested and threading.current_thread() is threading.main_thread():
             self._setup_visualization()
 
-        # Start AMCL worker process
+        # Start AMCL worker thread
         self.start_amcl_worker()
 
     def start_amcl_worker(self):
@@ -175,7 +194,7 @@ class AMCLNavigator:
                 daemon=True
             )
             self.amcl_process.start()
-            logging.info("[Main] AMCL worker process started")
+            logging.info("[Main] AMCL worker process started (PID: %d)", self.amcl_process.pid)
 
     def stop_amcl_worker(self):
         """Stop AMCL worker process"""
@@ -278,27 +297,87 @@ class AMCLNavigator:
         # Start background task to poll AMCL results
         asyncio.create_task(self._poll_amcl_results())
 
-        logging.info("Checking current motion mode...")
-        response = await self.conn.datachannel.pub_sub.publish_request_new(
-            RTC_TOPIC["MOTION_SWITCHER"],
-            {"api_id": 1001}
-        )
+        # Check and switch motion mode if needed
+        # logging.info("Checking current motion mode...")
+        # response = await self.conn.datachannel.pub_sub.publish_request_new(
+        #     RTC_TOPIC["MOTION_SWITCHER"],
+        #     {"api_id": 1001}
+        # )
+        #
+        # current_motion_switcher_mode = "unknown"
+        # if response['data']['header']['status']['code'] == 0:
+        #     data = json.loads(response['data']['data'])
+        #     current_motion_switcher_mode = data['name']
+        #     logging.info(f"Current motion mode: {current_motion_switcher_mode}")
 
-        if response['data']['header']['status']['code'] == 0:
-            data = json.loads(response['data']['data'])
-            current_motion_switcher_mode = data['name']
-            logging.info(f"Current motion mode: {current_motion_switcher_mode}")
+        # Try to switch to normal mode if not already
+        # if current_motion_switcher_mode != "normal":
+        #     logging.info(f"Attempting to switch from '{current_motion_switcher_mode}' to 'normal' mode...")
+        #     switch_response = await self.conn.datachannel.pub_sub.publish_request_new(
+        #         RTC_TOPIC["MOTION_SWITCHER"],
+        #         {
+        #             "api_id": 1002,
+        #             "parameter": {"name": "normal"}
+        #         }
+        #     )
+        #     switch_code = switch_response.get('data', {}).get('header', {}).get('status', {}).get('code', 'unknown') if switch_response else 'no response'
+        #
+        #     if switch_code == 0:
+        #         logging.info("Mode switch accepted, waiting for transition...")
+        #         await asyncio.sleep(5)
+        #
+        #         # Verify mode changed
+        #         verify_response = await self.conn.datachannel.pub_sub.publish_request_new(
+        #             RTC_TOPIC["MOTION_SWITCHER"],
+        #             {"api_id": 1001}
+        #         )
+        #         if verify_response['data']['header']['status']['code'] == 0:
+        #             verify_data = json.loads(verify_response['data']['data'])
+        #             new_mode = verify_data['name']
+        #             if new_mode == "normal":
+        #                 logging.info("✓ Successfully switched to 'normal' mode")
+        #             else:
+        #                 logging.warning(f"✗ Mode switch failed: still in '{new_mode}' mode")
+        #                 logging.warning(f"Continuing with '{new_mode}' mode...")
+        #     else:
+        #         logging.warning(f"✗ Mode switch rejected with code: {switch_code}")
+        #         logging.warning(f"Continuing with '{current_motion_switcher_mode}' mode...")
+        # else:
+        #     logging.info("Already in 'normal' mode")
 
-        if current_motion_switcher_mode != "normal":
-            logging.info(f"Switching motion mode from {current_motion_switcher_mode} to 'normal'...")
-            await self.conn.datachannel.pub_sub.publish_request_new(
-                RTC_TOPIC["MOTION_SWITCHER"],
-                {
-                    "api_id": 1002,
-                    "parameter": {"name": "normal"}
-                }
-            )
-            await asyncio.sleep(5)  # Wait while it stands up
+        # Stand up robot
+        # logging.info("Sending StandUp command...")
+        # standup_response = await self.conn.datachannel.pub_sub.publish_request_new(
+        #     RTC_TOPIC["SPORT_MOD"],
+        #     {
+        #         "api_id": SPORT_CMD["StandUp"],
+        #         "parameter": {}
+        #     }
+        # )
+        # if standup_response and standup_response.get('data', {}).get('header', {}).get('status', {}).get('code') == 0:
+        #     logging.info("✓ StandUp command successful")
+        # else:
+        #     code = standup_response.get('data', {}).get('header', {}).get('status', {}).get('code', 'unknown') if standup_response else 'no response'
+        #     logging.warning(f"✗ StandUp command failed with code: {code}")
+        # await asyncio.sleep(2)
+
+        # Enable continuous gait mode
+        # logging.info("Enabling continuous gait...")
+        # continuous_response = await self.conn.datachannel.pub_sub.publish_request_new(
+        #     RTC_TOPIC["SPORT_MOD"],
+        #     {
+        #         "api_id": SPORT_CMD["ContinuousGait"],
+        #         "parameter": {"flag": True}
+        #     }
+        # )
+        # if continuous_response and continuous_response.get('data', {}).get('header', {}).get('status', {}).get('code') == 0:
+        #     logging.info("✓ ContinuousGait command successful")
+        # else:
+        #     code = continuous_response.get('data', {}).get('header', {}).get('status', {}).get('code', 'unknown') if continuous_response else 'no response'
+        #     logging.warning(f"✗ ContinuousGait command failed with code: {code}")
+        # await asyncio.sleep(1)
+
+        logging.info("Robot initialization complete")
 
     def register_connection_callbacks(self):
         if self.conn is None or self._connection_callbacks_registered:
@@ -398,6 +477,13 @@ class AMCLNavigator:
 
     async def _plan_and_execute(self, goal_x: float, goal_y: float):
         """Plan path and execute navigation"""
+        # Clear AMCL input queue to stop pending updates
+        try:
+            while not self.amcl_input_queue.empty():
+                self.amcl_input_queue.get_nowait()
+        except:
+            pass
+
         self.goal = (goal_x, goal_y)
         if self.fig is not None and self.goal_plot is not None:
             self.goal_plot.set_data([goal_y], [goal_x])
@@ -433,9 +519,12 @@ class AMCLNavigator:
         # Set path for controller
         self.controller.set_path(self.path)
 
-        # Start navigation
+        # Start navigation - save current AMCL pose as reference
         self.is_navigating = True
+        self.nav_start_amcl_pose = self.amcl_pose
+        self.nav_start_odom = list(self.current_odom) if self.current_odom else [0, 0, 0]
         logging.info("Starting navigation...")
+        logging.info(f"Navigation baseline: AMCL={self.nav_start_amcl_pose}, odom={self.nav_start_odom}")
         await self._navigate()
 
     async def _navigate(self):
@@ -453,14 +542,17 @@ class AMCLNavigator:
         await asyncio.sleep(0.5)
 
         while self.is_navigating:
-            if self.amcl_pose is None:
+            # Use odometry-based pose during navigation (AMCL updates stopped)
+            current_nav_pose = self.odom_pose if self.odom_pose is not None else self.amcl_pose
+
+            if current_nav_pose is None:
                 logging.warning("Lost localization!")
                 await self._send_velocity_command(0.0, 0.0)
                 self.is_navigating = False
                 break
 
             # Check if pose is updating (detect connection loss)
-            if last_pose == self.amcl_pose:
+            if last_pose == current_nav_pose:
                 pose_stuck_count += 1
                 if pose_stuck_count > 20:  # 10 seconds without pose update
                     logging.warning("Pose not updating! Connection may be lost.")
@@ -470,17 +562,17 @@ class AMCLNavigator:
                     break
             else:
                 pose_stuck_count = 0
-                last_pose = self.amcl_pose
+                last_pose = current_nav_pose
 
-            # Use AMCL pose for control
-            linear_vel, angular_vel, goal_reached = self.controller.compute_control(self.amcl_pose)
+            # Use current navigation pose for control
+            linear_vel, angular_vel, goal_reached = self.controller.compute_control(current_nav_pose)
 
             # Debug: Log first few control commands
             if not hasattr(self, '_nav_loop_count'):
                 self._nav_loop_count = 0
 
             if self._nav_loop_count < 5:
-                logging.info(f"Control: lin={linear_vel:.2f}, ang={angular_vel:.2f}, waypoint={self.controller.current_waypoint_index}/{len(self.path)}, pose=({self.amcl_pose[0]:.2f},{self.amcl_pose[1]:.2f})")
+                logging.info(f"Control: lin={linear_vel:.2f}, ang={angular_vel:.2f}, waypoint={self.controller.current_waypoint_index}/{len(self.path)}, pose=({current_nav_pose[0]:.2f},{current_nav_pose[1]:.2f})")
             self._nav_loop_count += 1
 
             if goal_reached:
@@ -520,13 +612,46 @@ class AMCLNavigator:
                 logging.warning("Datachannel not open; skipping velocity command")
                 return
 
-            self.conn.datachannel.pub_sub.publish_without_callback(
-                RTC_TOPIC["SPORT_MOD"],
-                {
-                    "api_id": SPORT_CMD["Move"],
-                    "parameter": command
-                }
-            )
+            # Debug: Log first few commands
+            if not hasattr(self, '_cmd_count'):
+                self._cmd_count = 0
+                self._failed_cmd_count = 0
+            self._cmd_count += 1
+
+            if self._cmd_count <= 3 or self._cmd_count % 50 == 0:
+                logging.info(f"[CMD #{self._cmd_count}] Sending velocity: lin={linear:.3f}, ang={angular:.3f}")
+
+            # Use publish_request_new for first few commands to detect issues early
+            # After that, use publish_request_no_wait for performance (5Hz control loop)
+            if self._cmd_count <= 5:
+                response = await self.conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"],
+                    {
+                        "api_id": SPORT_CMD["Move"],
+                        "parameter": command
+                    }
+                )
+                if response and response.get('data', {}).get('header', {}).get('status', {}).get('code') == 0:
+                    logging.info(f"[CMD #{self._cmd_count}] ✓ Move command successful")
+                else:
+                    code = response.get('data', {}).get('header', {}).get('status', {}).get('code', 'unknown') if response else 'no response'
+                    logging.warning(f"[CMD #{self._cmd_count}] ✗ Move command failed with code: {code}")
+                    self._failed_cmd_count += 1
+
+                    # If first commands fail, stop navigation
+                    if self._failed_cmd_count >= 3:
+                        logging.error("Multiple move commands failed! Stopping navigation.")
+                        self.is_navigating = False
+            else:
+                # After initial validation, use fire-and-forget for high-frequency control
+                # This sends "req" type (not "msg") so robot will process it
+                self.conn.datachannel.pub_sub.publish_request_no_wait(
+                    RTC_TOPIC["SPORT_MOD"],
+                    {
+                        "api_id": SPORT_CMD["Move"],
+                        "parameter": command
+                    }
+                )
 
         except Exception as e:
             logging.error(f"Failed to send velocity command: {e}")
@@ -567,6 +692,7 @@ class AMCLNavigator:
             # Accumulate odometry (fast - just arithmetic)
             if self.current_odom is None:
                 self.current_odom = [0.0, 0.0, 0.0]
+                self.odom_pose = [0.0, 0.0, 0.0]
                 self.prev_pos = position
                 self.prev_yaw = rpy[2]
             else:
@@ -585,6 +711,19 @@ class AMCLNavigator:
                 self.current_odom[0] += dx
                 self.current_odom[1] += dy
                 self.current_odom[2] += dtheta
+
+                # Update odometry pose (for navigation)
+                if self.is_navigating and hasattr(self, 'nav_start_amcl_pose') and hasattr(self, 'nav_start_odom'):
+                    # During navigation: use odometry offset from navigation start point
+                    odom_delta_x = self.current_odom[0] - self.nav_start_odom[0]
+                    odom_delta_y = self.current_odom[1] - self.nav_start_odom[1]
+                    odom_delta_theta = self.current_odom[2] - self.nav_start_odom[2]
+
+                    self.odom_pose = [
+                        self.nav_start_amcl_pose[0] + odom_delta_x,
+                        self.nav_start_amcl_pose[1] + odom_delta_y,
+                        self.nav_start_amcl_pose[2] + odom_delta_theta
+                    ]
 
                 self.prev_pos = position
                 self.prev_yaw = rpy[2]
@@ -611,12 +750,17 @@ class AMCLNavigator:
                 self._scan_count = 0
             self._scan_count += 1
 
-            # Process less frequently - only every 10th scan
-            if self._scan_count % 10 != 0:
+            # Process less frequently - only every 20th scan (for slow AMCL)
+            if self._scan_count % 20 != 0:
                 return
 
             # Don't send if we don't have odometry yet
             if self.current_odom is None:
+                return
+
+            # CRITICAL: Don't update AMCL during navigation (too slow!)
+            # Only update when idle
+            if self.is_navigating:
                 return
 
             # Quick preprocessing (fast operations only)
@@ -648,8 +792,8 @@ class AMCLNavigator:
             if len(points_filtered) == 0:
                 return
 
-            # Downsample to ~30 points
-            downsample_factor = max(1, len(points_filtered) // 30)
+            # Aggressive downsample to ~15 points for fast processing
+            downsample_factor = max(1, len(points_filtered) // 15)
             points_filtered = points_filtered[::downsample_factor]
 
             # Convert to polar
@@ -668,7 +812,7 @@ class AMCLNavigator:
             # Non-blocking put - drop if queue full (we want latest data only)
             try:
                 self.amcl_input_queue.put_nowait(amcl_data)
-            except queue.Full:
+            except:
                 # Queue full - clear and put new data
                 try:
                     self.amcl_input_queue.get_nowait()
@@ -685,6 +829,7 @@ class AMCLNavigator:
         Runs independently - never blocks heartbeat
         """
         logging.info("[Main] Starting AMCL result polling task")
+        last_log_time = 0
 
         while True:
             try:
@@ -692,12 +837,31 @@ class AMCLNavigator:
                 try:
                     result = self.amcl_output_queue.get_nowait()
 
+                    # Handle different message types
+                    msg_type = result.get('type', 'update')
+
+                    if msg_type == 'init':
+                        logging.info(f"[Main] AMCL worker ready: {result['msg']}")
+                        continue
+                    elif msg_type == 'warning':
+                        logging.warning(f"[Main] {result['msg']}")
+                        continue
+                    elif msg_type == 'error':
+                        logging.error(f"[Main] AMCL worker error: {result['msg']}")
+                        continue
+                    elif msg_type == 'fatal':
+                        logging.error(f"[Main] AMCL worker fatal: {result['msg']}")
+                        continue
+
                     # Update pose and confidence
                     self.amcl_pose = result['pose']
                     self.localization_confidence = result['confidence']
-
-                    # Reconstruct particles for visualization (cached)
                     self.particles_cache = result['particles']
+
+                    # Log first result
+                    if not hasattr(self, '_first_result_logged'):
+                        self._first_result_logged = True
+                        logging.info(f"[Main] First AMCL result: pose={self.amcl_pose}, elapsed={result['elapsed']:.3f}s")
 
                     # Check if we just became localized
                     if self.localization_confidence > 0.3 and not self.is_localized:
@@ -708,23 +872,21 @@ class AMCLNavigator:
                         logging.info("Ready! Click on map to set goal.")
 
                     # Update visualization periodically
-                    if hasattr(self, '_result_count'):
-                        self._result_count += 1
-                    else:
-                        self._result_count = 1
-
-                    if self._result_count % 5 == 0 and self.fig is not None:
+                    if result['update_count'] % 5 == 0 and self.fig is not None:
                         self._update_visualization()
 
-                    # Log periodically
-                    if self._result_count % 10 == 0:
-                        logging.info(f"AMCL: pose=({self.amcl_pose[0]:.2f}, {self.amcl_pose[1]:.2f}), confidence={self.localization_confidence:.3f}")
+                    # Log periodically (every 5 seconds)
+                    import time
+                    current_time = time.time()
+                    if current_time - last_log_time > 5.0:
+                        logging.info(f"AMCL: pose=({self.amcl_pose[0]:.2f}, {self.amcl_pose[1]:.2f}), conf={self.localization_confidence:.2f}, process_time={result['elapsed']:.3f}s")
+                        last_log_time = current_time
 
                 except queue.Empty:
                     pass
 
                 # Sleep to avoid busy-waiting (doesn't block other tasks)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)  # 20Hz polling
 
             except Exception as e:
                 logging.error(f"Error polling AMCL results: {e}", exc_info=True)
@@ -811,7 +973,7 @@ async def main():
         logging.info("Initializing navigator and GUI...")
         navigator = AMCLNavigator(map_file, loop=asyncio.get_running_loop(), enable_visualization=True)
         logging.info("Navigator initialized!")
-        logging.info("AMCL processing runs in separate process - event loop stays responsive!")
+        logging.info("AMCL processing runs in separate PROCESS - bypasses GIL, event loop stays responsive!")
 
         global navigator_instance
         navigator_instance = navigator
@@ -823,9 +985,7 @@ async def main():
         # Configure data channel and subscriptions
         await navigator.on_connection_ready()
 
-        # Don't send stand up command - assume robot is already ready
-        logging.info("Robot should be in sport mode already...")
-        await asyncio.sleep(0.5)  # Brief delay
+        logging.info("Robot setup complete and ready for navigation")
 
         logging.info("\nWaiting for AMCL to localize robot...")
         logging.info("Move the robot slowly to help localization converge.\n")
