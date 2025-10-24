@@ -27,8 +27,10 @@ class SLAMMapper:
             map_height=400,
             map_resolution=0.1,  # 10cm resolution
             map_origin=(-20.0, -20.0),  # 40m x 40m map
-            max_range=20.0,  # Maximum lidar range
-            min_range=0.5
+            max_range=5.0,  # Maximum lidar range (reduced from 20m to match actual range)
+            min_range=0.5,
+            log_odds_occupied=2.0,  # Increased from 0.7 for faster obstacle detection
+            log_odds_free=-0.4
         )
         self.slam = SLAM(slam_params)
 
@@ -330,12 +332,26 @@ class SLAMMapper:
                 logging.info(f"Robot-centered coords range: X=[{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
                            f"Y=[{points[:,1].min():.2f}, {points[:,1].max():.2f}]")
 
+            # Debug: Log Z coordinate range
+            if self.scan_count % 10 == 0 and len(points) > 0:
+                logging.info(f"Z coords range: [{points[:,2].min():.2f}, {points[:,2].max():.2f}]m")
+
+            # Filter by height (Z axis) - take points near ground level for 2D mapping
+            height_min = -0.4  # 센서 아래 40cm ≈ 지면 포함
+            height_max = 1.0   # 센서 위 1m ≈ 지면 140cm (테이블/사람 포함)
+            height_mask = (points[:, 2] >= height_min) & (points[:, 2] <= height_max)
+
             # Filter out points that are too far or too close
             ranges_temp = np.sqrt(points[:, 0]**2 + points[:, 1]**2)
-            valid_mask = (ranges_temp >= self.slam.params.min_range) & (ranges_temp <= self.slam.params.max_range)
+            range_mask = (ranges_temp >= self.slam.params.min_range) & (ranges_temp <= self.slam.params.max_range)
+
+            # Combine height and range filters
+            valid_mask = height_mask & range_mask
 
             if self.scan_count % 10 == 0:
-                logging.info(f"Valid points: {np.sum(valid_mask)}/{len(points)} (filtered {len(points) - np.sum(valid_mask)})")
+                logging.info(f"Valid points: {np.sum(valid_mask)}/{len(points)} "
+                           f"(height filtered: {len(points) - np.sum(height_mask)}, "
+                           f"range filtered: {len(points) - np.sum(range_mask)})")
 
             points_filtered = points[valid_mask]
 
@@ -343,8 +359,8 @@ class SLAMMapper:
                 logging.warning(f"All points filtered out (scan {self.scan_count})")
                 return
 
-            # Downsample points aggressively for performance
-            downsample_factor = max(1, len(points_filtered) // 500)  # Limit to ~500 points
+            # Downsample points for performance (increased from 500 to 5000 for better obstacle detection)
+            downsample_factor = max(1, len(points_filtered) // 5000)  # Limit to ~5000 points
             points_filtered = points_filtered[::downsample_factor]
 
             if self.scan_count % 10 == 0:
@@ -358,10 +374,21 @@ class SLAMMapper:
             ranges = np.sqrt(x**2 + y**2).tolist()
             angles = np.arctan2(y, x).tolist()
 
-            # Debug: Print range statistics
+            # Debug: Print range statistics and front obstacle distance
             if self.scan_count % 10 == 0:
                 logging.info(f"Scan {self.scan_count}: {len(ranges)} points, "
                            f"range: [{min(ranges):.2f}, {max(ranges):.2f}]m")
+
+                # Find obstacles directly in front (angle close to 0)
+                front_obstacles = []
+                for r, a in zip(ranges, angles):
+                    # Check if angle is within ±15 degrees of front (0 radians)
+                    if abs(a) < np.radians(15):
+                        front_obstacles.append(r)
+
+                if front_obstacles:
+                    min_front_dist = min(front_obstacles)
+                    logging.info(f">>> FRONT OBSTACLE: {min_front_dist:.2f}m ahead (±15°)")
 
             # Update SLAM map
             if self.scan_count == 0:
