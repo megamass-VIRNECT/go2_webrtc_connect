@@ -100,9 +100,13 @@ class SLAM:
         # Bresenham's line algorithm
         points = self._bresenham_line(x0, y0, x1, y1)
 
-        # Update cells along the ray
+        # Update cells along the ray (skip first point - robot position)
         for i, (row, col) in enumerate(points):
             if not self.map.is_valid(row, col):
+                continue
+
+            # Skip the first point (robot position) to avoid marking it incorrectly
+            if i == 0:
                 continue
 
             # Last point is the obstacle (if within max range)

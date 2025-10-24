@@ -23,14 +23,14 @@ class SLAMMapper:
     def __init__(self, enable_visualization=True):
         # Initialize SLAM
         slam_params = SLAMParams(
-            map_width=400,
-            map_height=400,
-            map_resolution=0.1,  # 10cm resolution
-            map_origin=(-20.0, -20.0),  # 40m x 40m map
-            max_range=5.0,  # Maximum lidar range (reduced from 20m to match actual range)
+            map_width=800,
+            map_height=800,
+            map_resolution=0.05,  # 5cm resolution for finer detail
+            map_origin=(-20.0, -20.0),  # 40m x 40m map (800 cells × 0.05m = 40m)
+            max_range=3.0,  # Maximum lidar range (limited to avoid voxel map boundary artifacts)
             min_range=0.5,
-            log_odds_occupied=2.0,  # Increased from 0.7 for faster obstacle detection
-            log_odds_free=-0.4
+            log_odds_occupied=1.2,  # Balanced: strong enough to detect obstacles, not too aggressive
+            log_odds_free=-0.5  # Balanced: clears noise but doesn't erase real obstacles
         )
         self.slam = SLAM(slam_params)
 
@@ -39,6 +39,9 @@ class SLAMMapper:
 
         # Previous odometry
         self.prev_odom = None
+
+        # Odometry origin (first odometry position becomes our origin)
+        self.odom_origin = None
 
         # Statistics
         self.scan_count = 0
@@ -84,12 +87,14 @@ class SLAMMapper:
             # Current odometry (x, y, yaw) - position is in world frame
             current_odom = (position[0], position[1], rpy[2])
 
-            # Initialize pose on first message using absolute odometry
-            if self.prev_odom is None:
-                theta_init = np.arctan2(np.sin(current_odom[2]), np.cos(current_odom[2]))
-                self.current_pose = (current_odom[0], current_odom[1], theta_init)
+            # Initialize odometry origin on first message
+            if self.odom_origin is None:
+                self.odom_origin = current_odom
+                self.current_pose = (0.0, 0.0, 0.0)
+                logging.info(f"Odometry origin set: {self.odom_origin}")
+                logging.info(f"SLAM initialized at origin (0, 0, 0)")
 
-            # Update pose estimate
+            # Update pose estimate using relative movement
             if self.prev_odom is not None:
                 # Calculate movement in world frame
                 dx_world = current_odom[0] - self.prev_odom[0]
@@ -129,18 +134,18 @@ class SLAMMapper:
         """Setup matplotlib visualization"""
         plt.ion()  # Enable interactive mode
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
-        self.ax.set_xlabel('Y (meters)')
-        self.ax.set_ylabel('X (meters)')
+        self.ax.set_xlabel('X (meters)')
+        self.ax.set_ylabel('Y (meters)')
         self.ax.set_title('Real-time SLAM Map')
         self.ax.grid(True, alpha=0.3)
 
         # Initialize empty plot
         map_image = self.slam.get_map_image()
         extent = [
-            self.slam.map.origin[1],
-            self.slam.map.origin[1] + self.slam.map.width * self.slam.map.resolution,
             self.slam.map.origin[0],
-            self.slam.map.origin[0] + self.slam.map.height * self.slam.map.resolution
+            self.slam.map.origin[0] + self.slam.map.width * self.slam.map.resolution,
+            self.slam.map.origin[1],
+            self.slam.map.origin[1] + self.slam.map.height * self.slam.map.resolution
         ]
         self.map_plot = self.ax.imshow(map_image, cmap='gray', origin='lower',
                                         extent=extent, vmin=0, vmax=255, alpha=0.8)
@@ -171,17 +176,15 @@ class SLAMMapper:
 
             # Update robot position
             x, y, theta = self.current_pose
-            # Flip theta to correct direction (coordinates are inverted)
-            theta_corrected = -theta
-            self.robot_plot.set_data([y], [x])
+            self.robot_plot.set_data([x], [y])
 
             # Update robot direction arrow
             if self.robot_arrow is not None:
                 self.robot_arrow.remove()
             arrow_length = 1.0  # 1 meter arrow
-            dx = arrow_length * np.cos(theta_corrected)
-            dy = arrow_length * np.sin(theta_corrected)
-            self.robot_arrow = self.ax.arrow(y, x, dy, dx,
+            dx = arrow_length * np.cos(theta)
+            dy = arrow_length * np.sin(theta)
+            self.robot_arrow = self.ax.arrow(x, y, dx, dy,
                                             head_width=0.3, head_length=0.5,
                                             fc='red', ec='red', alpha=0.8)
 
@@ -189,9 +192,13 @@ class SLAMMapper:
             status_str = f'Robot Pose:\n'
             status_str += f'  X: {x:.2f}m\n'
             status_str += f'  Y: {y:.2f}m\n'
-            status_str += f'  θ: {np.degrees(theta):.1f}°\n'
-            status_str += f'  θ_display: {np.degrees(theta_corrected):.1f}°'
+            status_str += f'  θ: {np.degrees(theta):.1f}°'
             self.status_text.set_text(status_str)
+
+            # Zoom to robot-centered view (±10m around robot)
+            zoom_range = 10.0  # meters
+            self.ax.set_xlim(x - zoom_range, x + zoom_range)
+            self.ax.set_ylim(y - zoom_range, y + zoom_range)
 
             # Update plot
             self.fig.canvas.draw_idle()
@@ -255,6 +262,21 @@ class SLAMMapper:
             # CRITICAL FIX: positions are voxel grid INDICES, not world coordinates!
             # Convert voxel indices to 3D points in world frame
             origin_np = np.asarray(origin, dtype=np.float32)
+
+            # Filter out voxel map boundary points to avoid artifact edges
+            # Boundary points (index 0 or max) represent the physical limit of the voxel map
+            # and should not be treated as real obstacles
+            boundary_margin = 2  # cells
+            voxel_mask = (
+                (voxel_indices[:, 0] > boundary_margin) & (voxel_indices[:, 0] < width[0] - boundary_margin) &
+                (voxel_indices[:, 1] > boundary_margin) & (voxel_indices[:, 1] < width[1] - boundary_margin)
+            )
+            voxel_indices = voxel_indices[voxel_mask]
+
+            if len(voxel_indices) == 0:
+                logging.warning(f"All voxels filtered out by boundary filter (scan {self.scan_count})")
+                return
+
             points = origin_np + (voxel_indices * resolution)
 
             if self.scan_count == 0 and len(voxel_indices) > 0:
@@ -268,16 +290,32 @@ class SLAMMapper:
                            f"Y=[{points[:,1].min():.2f}, {points[:,1].max():.2f}], "
                            f"Z=[{points[:,2].min():.2f}, {points[:,2].max():.2f}]")
 
-            # Calculate map center (robot is approximately at the center of voxel map)
-            map_center_x = origin[0] + (width[0] * resolution) / 2.0
-            map_center_y = origin[1] + (width[1] * resolution) / 2.0
+            # Wait for odometry to be initialized
+            if self.odom_origin is None or self.prev_odom is None:
+                if self.scan_count == 0:
+                    logging.warning("Waiting for odometry data before processing LIDAR...")
+                return
+
+            # Get current robot position and orientation from odometry (world frame)
+            robot_x_world = self.prev_odom[0]
+            robot_y_world = self.prev_odom[1]
+            robot_yaw_world = self.prev_odom[2]
 
             if self.scan_count == 0:
-                logging.info(f"Map center (robot approx): ({map_center_x:.2f}, {map_center_y:.2f})")
+                logging.info(f"Robot pose (world frame): ({robot_x_world:.2f}, {robot_y_world:.2f}, yaw={np.degrees(robot_yaw_world):.1f}°)")
 
-            # Convert to robot-centered coordinates
-            points[:, 0] -= map_center_x
-            points[:, 1] -= map_center_y
+            # Convert to robot-centered coordinates using actual odometry position
+            points[:, 0] -= robot_x_world
+            points[:, 1] -= robot_y_world
+
+            # CRITICAL: Rotate points from world frame to robot body frame
+            # World frame lidar data needs to be rotated by -yaw to get robot body frame
+            cos_yaw = np.cos(-robot_yaw_world)
+            sin_yaw = np.sin(-robot_yaw_world)
+            x_rotated = points[:, 0] * cos_yaw - points[:, 1] * sin_yaw
+            y_rotated = points[:, 0] * sin_yaw + points[:, 1] * cos_yaw
+            points[:, 0] = x_rotated
+            points[:, 1] = y_rotated
 
             if self.scan_count == 0 and len(points) > 0:
                 logging.info(f"Robot-centered coords range: X=[{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
@@ -310,8 +348,8 @@ class SLAMMapper:
                 logging.warning(f"All points filtered out (scan {self.scan_count})")
                 return
 
-            # Downsample points for performance (increased from 500 to 5000 for better obstacle detection)
-            downsample_factor = max(1, len(points_filtered) // 5000)  # Limit to ~5000 points
+            # Downsample points for performance (500 points for good quality)
+            downsample_factor = max(1, len(points_filtered) // 500)  # Limit to ~500 points
             points_filtered = points_filtered[::downsample_factor]
 
             if self.scan_count % 10 == 0:
