@@ -49,11 +49,72 @@ class SLAMMapper:
         self.ax = None
         self.map_plot = None
         self.trajectory_plot = None
-        # Limit LIDAR data to ±60° (120° forward field of view)
-        self.front_angle_limit = np.radians(60.0)
 
         if self.enable_visualization:
             self._setup_visualization()
+
+    def lowstate_callback(self, message):
+        """Handle lowstate updates (IMU data only - no position)"""
+        try:
+            if not hasattr(self, 'odom_count'):
+                self.odom_count = 0
+            self.odom_count += 1
+
+            if self.odom_count % 100 == 0:
+                logging.info(f"Received {self.odom_count} lowstate messages")
+
+            data = message.get("data", {})
+
+            # Debug: Print message structure on first call
+            if self.prev_odom is None:
+                logging.info(f"LowState message keys: {list(message.keys())}")
+                logging.info(f"LowState data keys: {list(data.keys())}")
+
+            # Extract IMU state (only yaw is reliable)
+            imu_state = data.get("imu_state", {})
+            rpy = imu_state.get("rpy", [0.0, 0.0, 0.0])
+
+            # Debug: Print first IMU data
+            if self.prev_odom is None:
+                logging.info(f"First IMU - rpy: {rpy}")
+                logging.warning("WARNING: No position data available in rt/lf/lowstate!")
+                logging.warning("SLAM will only track orientation, not robot position.")
+                logging.warning("The map will show scans from a fixed location with rotating direction.")
+
+            # Current yaw only (no position data available)
+            current_yaw = rpy[2]
+
+            # Update pose estimate
+            if self.prev_odom is not None:
+                # Only update orientation, position stays at (0, 0)
+                dtheta = current_yaw - self.prev_odom
+
+                # Normalize angle difference
+                while dtheta > np.pi:
+                    dtheta -= 2 * np.pi
+                while dtheta < -np.pi:
+                    dtheta += 2 * np.pi
+
+                # Debug: Print movement
+                if abs(dtheta) > 0.05:  # 约3度
+                    logging.info(f"Robot rotated: dtheta={dtheta:.3f} rad ({np.degrees(dtheta):.1f} deg)")
+
+                # Update current pose (only theta changes)
+                x, y, theta = self.current_pose
+                theta += dtheta
+
+                # Normalize theta
+                theta = np.arctan2(np.sin(theta), np.cos(theta))
+
+                self.current_pose = (x, y, theta)
+
+                if abs(dtheta) > 0.05:
+                    logging.info(f"New orientation: theta={theta:.3f} rad ({np.degrees(theta):.1f} deg)")
+
+            self.prev_odom = current_yaw
+
+        except Exception as e:
+            logging.error(f"Error in lowstate callback: {e}", exc_info=True)
 
     def sportmodestate_callback(self, message):
         """Handle sport mode state updates (odometry)"""
@@ -83,11 +144,6 @@ class SLAMMapper:
 
             # Current odometry (x, y, yaw) - position is in world frame
             current_odom = (position[0], position[1], rpy[2])
-
-            # Initialize pose on first message using absolute odometry
-            if self.prev_odom is None:
-                theta_init = np.arctan2(np.sin(current_odom[2]), np.cos(current_odom[2]))
-                self.current_pose = (current_odom[0], current_odom[1], theta_init)
 
             # Update pose estimate
             if self.prev_odom is not None:
@@ -219,29 +275,16 @@ class SLAMMapper:
                 if isinstance(data_inner, dict):
                     logging.info(f"Inner data keys: {list(data_inner.keys())}")
 
-            positions_raw = data_inner.get("positions", [])
+            positions = data_inner.get("positions", [])
 
             # Check if positions is valid
-            if positions_raw is None or (hasattr(positions_raw, '__len__') and len(positions_raw) == 0):
+            if positions is None or (hasattr(positions, '__len__') and len(positions) == 0):
                 logging.warning(f"No LIDAR points received (scan {self.scan_count})")
                 return
 
-            # Convert to numpy array and normalize shape
-            positions_np = np.asarray(positions_raw, dtype=np.float32)
-            if positions_np.size == 0:
-                logging.warning(f"No LIDAR points received after conversion (scan {self.scan_count})")
-                return
-
-            if positions_np.ndim == 1:
-                if positions_np.size % 3 != 0:
-                    logging.error(f"Unexpected LIDAR positions length ({positions_np.size}); cannot reshape into XYZ triplets")
-                    return
-                voxel_indices = positions_np.reshape(-1, 3)
-            elif positions_np.ndim == 2 and positions_np.shape[1] == 3:
-                voxel_indices = positions_np
-            else:
-                logging.error(f"Unexpected LIDAR positions shape {positions_np.shape}; expected (N*3,) or (N,3)")
-                return
+            # Convert to numpy array if it isn't already
+            if not isinstance(positions, np.ndarray):
+                positions = np.array(positions, dtype=np.float32)
 
             # Get voxel map parameters
             origin = data.get("origin", [0.0, 0.0, 0.0])
@@ -254,14 +297,20 @@ class SLAMMapper:
 
             # CRITICAL FIX: positions are voxel grid INDICES, not world coordinates!
             # Convert voxel indices to 3D points in world frame
-            origin_np = np.asarray(origin, dtype=np.float32)
-            points = origin_np + (voxel_indices * resolution)
+            voxel_indices = np.array([positions[i:i+3] for i in range(0, len(positions), 3)], dtype=np.float32)
 
             if self.scan_count == 0 and len(voxel_indices) > 0:
                 logging.info(f"First scan: {len(voxel_indices)} voxels")
                 logging.info(f"Voxel indices range: X=[{voxel_indices[:,0].min()}, {voxel_indices[:,0].max()}], "
                            f"Y=[{voxel_indices[:,1].min()}, {voxel_indices[:,1].max()}], "
                            f"Z=[{voxel_indices[:,2].min()}, {voxel_indices[:,2].max()}]")
+
+            # Convert voxel indices to world coordinates
+            # world_pos = origin + (voxel_index * resolution)
+            points = np.zeros_like(voxel_indices)
+            points[:, 0] = origin[0] + (voxel_indices[:, 0] * resolution)
+            points[:, 1] = origin[1] + (voxel_indices[:, 1] * resolution)
+            points[:, 2] = origin[2] + (voxel_indices[:, 2] * resolution)
 
             if self.scan_count == 0 and len(points) > 0:
                 logging.info(f"World coords range: X=[{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
@@ -288,7 +337,7 @@ class SLAMMapper:
                 logging.info(f"Z coords range: [{points[:,2].min():.2f}, {points[:,2].max():.2f}]m")
 
             # Filter by height (Z axis) - take points near ground level for 2D mapping
-            height_min = -0.2  # 센서 아래 20cm만 포함해 지면 반사 억제
+            height_min = -0.2  # 센서 아래 20cm ≈ 지면 포함
             height_max = 1.0   # 센서 위 1m (테이블/사람 포함)
             height_mask = (points[:, 2] >= height_min) & (points[:, 2] <= height_max)
 
@@ -319,18 +368,11 @@ class SLAMMapper:
 
             # Convert point cloud to polar coordinates (range, angle)
             # Points are already in robot frame (x-forward, y-left)
-            # Restrict to the robot's forward 120° field of view
-            angles_rad = np.arctan2(points_filtered[:, 1], points_filtered[:, 0])
-            front_mask = np.abs(angles_rad) <= self.front_angle_limit
-            points_filtered = points_filtered[front_mask]
-            angles_rad = angles_rad[front_mask]
-
-            if len(points_filtered) == 0:
-                logging.warning(f"No LIDAR points within ±{np.degrees(self.front_angle_limit):.0f}° (scan {self.scan_count})")
-                return
-
-            ranges = np.linalg.norm(points_filtered[:, :2], axis=1).tolist()
-            angles = angles_rad.tolist()
+            # For SLAM, we need angles relative to robot heading
+            x = points_filtered[:, 0]
+            y = points_filtered[:, 1]
+            ranges = np.sqrt(x**2 + y**2).tolist()
+            angles = np.arctan2(y, x).tolist()
 
             # Debug: Print range statistics and front obstacle distance
             if self.scan_count % 10 == 0:
